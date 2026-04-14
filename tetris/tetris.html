@@ -1513,7 +1513,12 @@ document.getElementById('ready-btn').addEventListener('click', () => {
 });
 
 document.getElementById('waiting-cancel-btn').addEventListener('click', () => {
-  cleanupRoom(); showPage('title');
+  cleanupRoom();
+  const url = new URL(location.href);
+  url.searchParams.delete('room');
+  url.searchParams.delete('nick');
+  history.pushState({}, '', url.toString());
+  goToTitle();
 });
 
 // ---- gameState 管理 ----

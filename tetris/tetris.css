@@ -1,0 +1,753 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a1a2e;
+  min-height: 100vh;
+  font-family: 'Courier New', monospace;
+  color: #eee;
+  overflow: hidden;
+}
+.page {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.page.hidden { display: none; }
+
+/* ===== タイトル画面 ===== */
+#title-screen {
+  flex-direction: column;
+  background: #1a1a2e;
+  gap: 0;
+}
+#title-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+#title-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+}
+#title-screen h1 {
+  font-size: 72px;
+  font-weight: bold;
+  color: #e94560;
+  text-shadow: 0 0 30px #e94560, 0 0 60px rgba(233,69,96,0.4);
+  letter-spacing: 8px;
+}
+#title-ranking-box {
+  background: #16213e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 16px 24px;
+  min-width: 240px;
+}
+#title-ranking-box h3 {
+  font-size: 12px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  margin-bottom: 10px;
+  text-align: center;
+}
+#title-ranking-list {
+  list-style: none;
+  font-size: 14px;
+}
+#title-ranking-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 4px 0;
+  color: #ccc;
+  border-bottom: 1px solid #2a2a4a;
+}
+#title-ranking-list li:last-child { border-bottom: none; }
+#title-ranking-list li.top1 { color: #f0c040; font-weight: bold; }
+#title-ranking-list li .rank { color: #666; }
+#title-start-btn {
+  padding: 14px 48px;
+  font-size: 18px;
+  background: #e94560;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 2px;
+  transition: background 0.2s, transform 0.1s;
+}
+#title-start-btn:hover { background: #c73652; transform: scale(1.04); }
+#title-hint {
+  font-size: 12px;
+  color: #555;
+}
+#title-controls {
+  font-size: 11px;
+  color: #555;
+  text-align: center;
+  line-height: 2;
+}
+#title-controls span { color: #888; font-weight: bold; }
+
+/* ===== ゲーム画面 ===== */
+#game-screen { background: #1a1a2e; }
+#game-container {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+#left-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+canvas {
+  border: 2px solid #444;
+  background: #0d0d1a;
+}
+#hold-panel {
+  padding: 0;
+  border: 2px solid #444;
+}
+#hold-panel h3 {
+  padding: 6px 10px 4px;
+  margin-bottom: 0;
+}
+#hold-canvas {
+  display: block;
+  background: #0d0d1a;
+  border: none;
+  border-top: 1px solid #333;
+}
+#side-panel {
+  width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.panel-box {
+  background: #16213e;
+  border: 1px solid #444;
+  padding: 12px;
+  border-radius: 4px;
+}
+.panel-box h3 {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.panel-box .value {
+  font-size: 24px;
+  font-weight: bold;
+  color: #e94560;
+}
+#next-canvas {
+  display: block;
+  background: #0d0d1a;
+  border: none;
+}
+.controls {
+  font-size: 11px;
+  color: #888;
+  line-height: 1.8;
+}
+.controls span {
+  color: #e94560;
+  font-weight: bold;
+}
+
+/* ===== 待機画面 ===== */
+#waiting-screen { background: #1a1a2e; flex-direction: column; }
+#waiting-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  background: #16213e;
+  border: 1px solid #444;
+  border-radius: 10px;
+  padding: 40px 56px;
+  min-width: 340px;
+}
+#waiting-inner h2 {
+  font-size: 28px;
+  color: #e94560;
+  text-shadow: 0 0 16px #e94560;
+  letter-spacing: 4px;
+}
+#waiting-room-id { font-size: 13px; color: #888; }
+#waiting-room-label { color: #f0c040; font-size: 15px; }
+#waiting-hint { font-size: 11px; color: #555; }
+#waiting-players {
+  display: flex;
+  gap: 20px;
+  width: 100%;
+}
+.player-slot {
+  flex: 1;
+  background: #0d0d1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.slot-name { font-size: 14px; color: #ccc; }
+.slot-ready {
+  font-size: 12px;
+  color: #555;
+  min-height: 18px;
+}
+.slot-ready.ready { color: #4fc; }
+#waiting-wins {
+  font-size: 20px;
+  font-weight: bold;
+  color: #e94560;
+  letter-spacing: 2px;
+}
+#waiting-wins span { color: #f0c040; }
+#ready-btn {
+  padding: 12px 40px;
+  font-size: 16px;
+  background: #e94560;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 2px;
+  transition: background 0.2s, opacity 0.2s;
+}
+#ready-btn:hover:not(:disabled) { background: #c73652; }
+#ready-btn:disabled { opacity: 0.4; cursor: default; }
+#waiting-status { font-size: 12px; color: #4fc; min-height: 18px; }
+#waiting-cancel-btn {
+  background: transparent;
+  border: none;
+  color: #555;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  letter-spacing: 1px;
+  transition: color 0.2s;
+}
+#waiting-cancel-btn:hover { color: #aaa; }
+
+/* ===== オンラインリザルト ===== */
+#online-result {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 65;
+}
+#online-result.hidden { display: none; }
+#online-result-inner {
+  background: #16213e;
+  border: 1px solid #444;
+  border-radius: 10px;
+  padding: 40px 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  min-width: 320px;
+}
+#online-result-title {
+  font-size: 40px;
+  color: #e94560;
+  text-shadow: 0 0 20px #e94560;
+  letter-spacing: 4px;
+}
+#online-result-msg { font-size: 16px; color: #ccc; }
+#online-result-wins {
+  font-size: 18px;
+  color: #f0c040;
+  font-weight: bold;
+  letter-spacing: 2px;
+}
+#online-result-buttons { display: flex; gap: 16px; }
+#online-rematch-btn {
+  padding: 12px 32px;
+  font-size: 15px;
+  background: #e94560;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 1px;
+  transition: background 0.2s;
+}
+#online-rematch-btn:hover { background: #c73652; }
+#online-rematch-btn.hidden { display: none; }
+#online-result-home-btn {
+  padding: 12px 32px;
+  font-size: 15px;
+  background: transparent;
+  color: #888;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: color 0.2s, border-color 0.2s;
+}
+#online-result-home-btn:hover { color: #ccc; border-color: #888; }
+
+/* ===== ニックネーム入力 ===== */
+#nickname-input {
+  padding: 8px 14px;
+  font-size: 14px;
+  background: #0d0d1a;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #eee;
+  font-family: 'Courier New', monospace;
+  width: 220px;
+  text-align: center;
+  letter-spacing: 1px;
+}
+#nickname-input:focus { outline: none; border-color: #e94560; }
+
+/* ===== 相手フィールド（対戦モード） ===== */
+/* ===== キー設定オーバーレイ ===== */
+#keybind-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 90;
+}
+#keybind-overlay.hidden { display: none; }
+#keybind-inner {
+  background: #16213e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 32px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  min-width: 340px;
+}
+#keybind-inner h2 {
+  font-size: 20px;
+  color: #e94560;
+  letter-spacing: 4px;
+}
+#keybind-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.keybind-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.keybind-label {
+  font-size: 13px;
+  color: #aaa;
+  width: 90px;
+}
+.keybind-key {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  color: #eee;
+  background: #0d0d1a;
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-family: 'Courier New', monospace;
+  min-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.keybind-key.listening {
+  color: #f0c040;
+  border-color: #f0c040;
+  animation: blink 0.8s step-start infinite;
+}
+@keyframes blink {
+  50% { opacity: 0.4; }
+}
+.keybind-change-btn {
+  padding: 5px 14px;
+  font-size: 11px;
+  background: transparent;
+  color: #888;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: color 0.2s, border-color 0.2s;
+  white-space: nowrap;
+}
+.keybind-change-btn:hover { color: #ccc; border-color: #888; }
+.keybind-change-btn:disabled { opacity: 0.4; cursor: default; }
+#keybind-reset {
+  padding: 8px 20px;
+  font-size: 12px;
+  background: transparent;
+  color: #888;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: color 0.2s, border-color 0.2s;
+}
+#keybind-reset:hover { color: #ccc; border-color: #888; }
+#keybind-close {
+  padding: 10px 32px;
+  font-size: 14px;
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 1px;
+  transition: background 0.2s;
+}
+#keybind-close:hover { background: #c73652; }
+#title-keybind-btn {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  z-index: 1;
+  padding: 7px 20px;
+  font-size: 12px;
+  background: #16213e;
+  color: #aaa;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+#title-keybind-btn:hover { background: #1e2a50; color: #eee; border-color: #888; }
+#game-keybind-btn {
+  width: 100%;
+  padding: 10px 0;
+  font-size: 12px;
+  background: transparent;
+  color: #666;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: color 0.2s, border-color 0.2s;
+}
+#game-keybind-btn:hover { color: #ccc; border-color: #888; }
+
+/* ===== ホーム確認ダイアログ ===== */
+#home-confirm {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 80;
+}
+#home-confirm.hidden { display: none; }
+#home-confirm-inner {
+  background: #16213e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  padding: 32px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+#home-confirm-msg {
+  font-size: 18px;
+  color: #eee;
+  letter-spacing: 1px;
+}
+#home-confirm-buttons {
+  display: flex;
+  gap: 16px;
+}
+#home-confirm-ok {
+  padding: 10px 28px;
+  font-size: 14px;
+  background: #e94560;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 1px;
+  transition: background 0.2s;
+}
+#home-confirm-ok:hover { background: #c73652; }
+#home-confirm-cancel {
+  padding: 10px 28px;
+  font-size: 14px;
+  background: transparent;
+  color: #888;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: color 0.2s, border-color 0.2s;
+}
+#home-confirm-cancel:hover { color: #ccc; border-color: #888; }
+
+#home-btn {
+  width: 100%;
+  padding: 10px 0;
+  font-size: 12px;
+  background: transparent;
+  color: #666;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: color 0.2s, border-color 0.2s;
+}
+#home-btn:hover { color: #ccc; border-color: #888; }
+
+#opponent-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 154px;
+}
+#opponent-col.hidden { display: none; }
+#opponent-board {
+  border: 2px solid #666;
+  background: #0d0d1a;
+  display: block;
+}
+#opponent-name-box h3 { color: #e94560; }
+
+/* ===== タイトル画面 ルームUI ===== */
+#room-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+#room-input {
+  padding: 8px 14px;
+  font-size: 14px;
+  background: #0d0d1a;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #eee;
+  font-family: 'Courier New', monospace;
+  width: 220px;
+  text-align: center;
+  letter-spacing: 2px;
+}
+#room-input:focus { outline: none; border-color: #e94560; }
+#room-join-btn {
+  padding: 10px 32px;
+  font-size: 15px;
+  background: #16213e;
+  color: #e94560;
+  border: 1px solid #e94560;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 2px;
+  transition: background 0.2s, color 0.2s;
+}
+#room-join-btn:hover { background: #e94560; color: #fff; }
+#room-hint { font-size: 11px; color: #555; }
+#online-status {
+  font-size: 12px;
+  color: #4fc;
+  min-height: 18px;
+}
+
+/* ===== オーバーレイ共通 ===== */
+#overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+  gap: 20px;
+  z-index: 60;
+}
+#overlay h2 {
+  font-size: 36px;
+  color: #e94560;
+  text-shadow: 0 0 20px #e94560;
+}
+#overlay p {
+  font-size: 18px;
+  color: #ccc;
+}
+#overlay .btn-primary {
+  padding: 12px 32px;
+  font-size: 16px;
+  background: #e94560;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 1px;
+  transition: background 0.2s;
+}
+#overlay .btn-primary:hover { background: #c73652; }
+#overlay .btn-secondary {
+  padding: 8px 24px;
+  font-size: 13px;
+  background: transparent;
+  color: #888;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: color 0.2s, border-color 0.2s;
+}
+#overlay .btn-secondary:hover { color: #ccc; border-color: #888; }
+#overlay.hidden { display: none; }
+
+/* ===== 難易度選択 ===== */
+#difficulty-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 70;
+}
+#difficulty-overlay.hidden { display: none; }
+#difficulty-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+#difficulty-inner h2 {
+  font-size: 28px;
+  color: #e94560;
+  text-shadow: 0 0 16px #e94560;
+  letter-spacing: 4px;
+}
+#difficulty-buttons {
+  display: flex;
+  gap: 20px;
+}
+.diff-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 32px;
+  background: #16213e;
+  border: 2px solid #444;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  color: #eee;
+  transition: border-color 0.2s, transform 0.15s, background 0.2s;
+  min-width: 130px;
+}
+.diff-btn:hover { border-color: #e94560; background: #1e2a50; transform: scale(1.06); }
+.diff-btn:nth-child(1) .diff-name { color: #4fc; }
+.diff-btn:nth-child(2) .diff-name { color: #f0c040; }
+.diff-btn:nth-child(3) .diff-name { color: #e94560; }
+.diff-name { font-size: 22px; font-weight: bold; letter-spacing: 2px; }
+.diff-desc { font-size: 12px; color: #888; }
+#diff-back-btn {
+  background: transparent;
+  border: none;
+  color: #666;
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  letter-spacing: 1px;
+  transition: color 0.2s;
+}
+#diff-back-btn:hover { color: #aaa; }
+
+/* ===== カウントダウン ===== */
+#countdown-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 70;
+}
+#countdown-overlay.hidden { display: none; }
+#countdown-number {
+  font-size: 220px;
+  font-weight: bold;
+  font-family: 'Courier New', monospace;
+  color: #fff;
+  text-shadow: 0 0 40px #e94560, 0 0 80px rgba(233,69,96,0.5);
+  animation: countPop 0.95s ease-out forwards;
+}
+@keyframes countPop {
+  0%   { transform: scale(2.2); opacity: 0; }
+  18%  { transform: scale(1);   opacity: 1; }
+  72%  { transform: scale(1);   opacity: 1; }
+  100% { transform: scale(0.6); opacity: 0; }
+}
+
+/* ===== ゲームオーバーアニメ ===== */
+#gameover-anim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  z-index: 50;
+  overflow: hidden;
+}
+#gameover-anim.hidden { display: none; }
+.go-char {
+  position: fixed;
+  font-size: 72px;
+  font-weight: bold;
+  font-family: 'Courier New', monospace;
+  color: #e94560;
+  text-shadow: 3px 3px 10px rgba(0,0,0,0.8), 0 0 24px #e94560;
+}

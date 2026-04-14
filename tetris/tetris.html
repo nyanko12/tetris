@@ -1,0 +1,2280 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>テトリス</title>
+<link rel="stylesheet" href="tetris.css">
+
+<!-- Firebase 初期化 -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-app.js";
+  import { getDatabase, ref, set, onValue, update, remove, runTransaction, push, onDisconnect } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-database.js";
+  import { firebaseConfig } from "./firebase-config.js";
+
+  const app = initializeApp(firebaseConfig);
+  const db  = getDatabase(app);
+
+  // 既存コード（非module）から使えるようにwindowに公開
+  window._db             = db;
+  window._ref            = ref;
+  window._set            = set;
+  window._onValue        = onValue;
+  window._update         = update;
+  window._remove         = remove;
+  window._runTransaction = runTransaction;
+  window._push           = push;
+  window._onDisconnect   = onDisconnect;
+  window._firebaseReady  = true;
+  window.dispatchEvent(new Event('firebase-ready'));
+</script>
+</head>
+<body>
+
+<!-- タイトル画面 -->
+<div id="title-screen" class="page">
+  <canvas id="title-bg"></canvas>
+  <div id="title-inner">
+    <h1>TETRIS</h1>
+    <div id="title-ranking-box">
+      <h3>ハイスコア</h3>
+      <ol id="title-ranking-list"></ol>
+    </div>
+    <button id="title-start-btn">1人プレイ</button>
+    <p id="title-hint">Space キーでもスタート</p>
+
+    <!-- オンライン対戦 -->
+    <div id="room-box">
+      <input id="nickname-input" type="text" placeholder="ニックネーム（例: Player1）" maxlength="16">
+      <input id="room-input" type="text" placeholder="ルームID（例: abc123）" maxlength="20">
+      <button id="room-join-btn">対戦を始める</button>
+      <p id="online-status"></p>
+      <p id="room-hint">同じIDを相手と共有してください</p>
+    </div>
+    <div id="title-controls">
+      <span>←→</span> 移動 &nbsp;
+      <span>↑</span> 回転 &nbsp;
+      <span>↓</span> 低速落下<br>
+      <span>Space</span> 即落下 &nbsp;
+      <span>C</span> ホールド &nbsp;
+      <span>P</span> 一時停止
+    </div>
+  </div>
+  <button id="title-keybind-btn">⚙ キー設定</button>
+</div>
+
+<!-- 待機画面 -->
+<div id="waiting-screen" class="page hidden">
+  <div id="waiting-inner">
+    <h2>対戦待機中</h2>
+    <p id="waiting-room-id">ルームID: <strong id="waiting-room-label"></strong></p>
+    <p id="waiting-hint">このIDを相手に共有してください</p>
+    <div id="waiting-players">
+      <div class="player-slot" id="slot-p1">
+        <span class="slot-name" id="slot-p1-name">待機中...</span>
+        <span class="slot-ready" id="slot-p1-ready"></span>
+      </div>
+      <div class="player-slot" id="slot-p2">
+        <span class="slot-name" id="slot-p2-name">待機中...</span>
+        <span class="slot-ready" id="slot-p2-ready"></span>
+      </div>
+    </div>
+    <div id="waiting-wins">
+      <span id="wins-p1">0</span> 勝 ー <span id="wins-p2">0</span> 勝
+    </div>
+    <button id="ready-btn" disabled>準備完了</button>
+    <p id="waiting-status"></p>
+    <button id="waiting-cancel-btn">キャンセル</button>
+  </div>
+</div>
+
+<!-- オンライン対戦リザルト -->
+<div id="online-result" class="hidden">
+  <div id="online-result-inner">
+    <h2 id="online-result-title"></h2>
+    <p id="online-result-msg"></p>
+    <div id="online-result-wins"></div>
+    <div id="online-result-buttons">
+      <button id="online-rematch-btn" class="hidden">再戦</button>
+      <button id="online-result-home-btn">タイトルへ</button>
+    </div>
+  </div>
+</div>
+
+<!-- ゲーム画面 -->
+<div id="game-screen" class="page hidden">
+  <div id="game-container">
+    <div id="left-col">
+      <div class="panel-box" id="hold-panel">
+        <h3>HOLD</h3>
+        <canvas id="hold-canvas" width="300" height="80"></canvas>
+      </div>
+      <canvas id="board" width="300" height="600"></canvas>
+    </div>
+    <div id="side-panel">
+      <div class="panel-box">
+        <h3>NEXT</h3>
+        <canvas id="next-canvas" width="116" height="80"></canvas>
+      </div>
+      <div class="panel-box">
+        <h3>スコア</h3>
+        <div class="value" id="score-display">0</div>
+      </div>
+      <div class="panel-box">
+        <h3>レベル</h3>
+        <div class="value" id="level-display">1</div>
+      </div>
+      <div class="panel-box">
+        <h3>ライン</h3>
+        <div class="value" id="lines-display">0</div>
+      </div>
+      <div class="panel-box controls">
+        <span>←→</span> 移動<br>
+        <span>↑</span> 回転<br>
+        <span>↓</span> 低速落下<br>
+        <span>Space</span> 即落下<br>
+        <span>C</span> ホールド<br>
+        <span>P</span> 一時停止
+      </div>
+      <button id="game-keybind-btn">⚙ キー設定</button>
+      <button id="home-btn">← ホーム</button>
+    </div>
+
+    <!-- 相手フィールド（オンライン対戦時のみ表示） -->
+    <div id="opponent-col" class="hidden">
+      <div class="panel-box" id="opponent-name-box">
+        <h3 id="opponent-label">OPPONENT</h3>
+        <div class="value" style="font-size:16px;" id="opponent-score-display">0</div>
+      </div>
+      <canvas id="opponent-board" width="150" height="300"></canvas>
+      <div class="panel-box" style="margin-top:8px;">
+        <h3>相手スコア</h3>
+        <div class="value" style="font-size:16px;" id="opponent-score-display2">0</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- キー設定オーバーレイ -->
+<div id="keybind-overlay" class="hidden">
+  <div id="keybind-inner">
+    <h2>キー設定</h2>
+    <div id="keybind-list"></div>
+    <button id="keybind-reset">デフォルトに戻す</button>
+    <button id="keybind-close">閉じる</button>
+  </div>
+</div>
+
+<!-- ホーム確認ダイアログ -->
+<div id="home-confirm" class="hidden">
+  <div id="home-confirm-inner">
+    <p id="home-confirm-msg">ホームに戻りますか？</p>
+    <div id="home-confirm-buttons">
+      <button id="home-confirm-ok">戻る</button>
+      <button id="home-confirm-cancel">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<!-- 難易度選択 -->
+<div id="difficulty-overlay" class="hidden">
+  <div id="difficulty-inner">
+    <h2>難易度選択</h2>
+    <div id="difficulty-buttons">
+      <button class="diff-btn" data-level="1">
+        <span class="diff-name">EASY</span>
+        <span class="diff-desc">Level 1スタート</span>
+      </button>
+      <button class="diff-btn" data-level="3">
+        <span class="diff-name">NORMAL</span>
+        <span class="diff-desc">Level 3スタート</span>
+      </button>
+      <button class="diff-btn" data-level="5">
+        <span class="diff-name">HARD</span>
+        <span class="diff-desc">Level 5スタート</span>
+      </button>
+    </div>
+    <button id="diff-back-btn">← 戻る</button>
+  </div>
+</div>
+
+<!-- カウントダウン -->
+<div id="countdown-overlay" class="hidden">
+  <div id="countdown-number"></div>
+</div>
+
+<!-- ゲームオーバーアニメ -->
+<div id="gameover-anim" class="hidden"></div>
+
+<!-- ゲームオーバーオーバーレイ -->
+<div id="overlay" class="hidden">
+  <h2 id="overlay-title"></h2>
+  <p id="overlay-msg"></p>
+  <button id="overlay-btn" class="btn-primary">もう一度</button>
+  <button id="overlay-title-btn" class="btn-secondary">タイトルへ戻る</button>
+</div>
+
+<script>
+const COLS = 10, ROWS = 20, CELL = 30;
+const COLORS = [
+  null,
+  '#00f0f0', // I - シアン
+  '#f0f000', // O - 黄
+  '#a000f0', // T - 紫
+  '#00f000', // S - 緑
+  '#f00000', // Z - 赤
+  '#0000f0', // J - 青
+  '#f0a000', // L - オレンジ
+  '#888888', // 8 - ガベージ（邪魔ブロック）
+];
+
+// ====== キー設定 ======
+const KB_STORAGE_KEY = 'tetris_keybinds';
+const KB_DEFAULT = {
+  left:      'ArrowLeft',
+  right:     'ArrowRight',
+  down:      'ArrowDown',
+  rotate:    'ArrowUp',
+  hardDrop:  'Space',
+  hold:      'KeyC',
+  pause:     'KeyP',
+};
+const KB_LABELS = {
+  left:     '左移動',
+  right:    '右移動',
+  down:     '低速落下',
+  rotate:   '回転',
+  hardDrop: '即落下',
+  hold:     'ホールド',
+  pause:    '一時停止',
+};
+
+function loadKeybinds() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(KB_STORAGE_KEY));
+    if (saved && typeof saved === 'object') {
+      // デフォルトに不足分をマージ
+      return Object.assign({}, KB_DEFAULT, saved);
+    }
+  } catch {}
+  return { ...KB_DEFAULT };
+}
+
+function saveKeybinds() {
+  localStorage.setItem(KB_STORAGE_KEY, JSON.stringify(keybinds));
+}
+
+// code → 表示名
+function codeToLabel(code) {
+  const map = {
+    ArrowLeft: '← LEFT', ArrowRight: '→ RIGHT',
+    ArrowUp: '↑ UP', ArrowDown: '↓ DOWN',
+    Space: 'SPACE', Enter: 'ENTER', Escape: 'ESCAPE',
+    ShiftLeft: 'L-SHIFT', ShiftRight: 'R-SHIFT',
+    ControlLeft: 'L-CTRL', ControlRight: 'R-CTRL',
+    AltLeft: 'L-ALT', AltRight: 'R-ALT',
+  };
+  if (map[code]) return map[code];
+  // Key_ 系: KeyA → A
+  if (code.startsWith('Key')) return code.slice(3);
+  // Digit_ 系: Digit1 → 1
+  if (code.startsWith('Digit')) return code.slice(5);
+  // Numpad_ 系: Numpad0 → NUM0
+  if (code.startsWith('Numpad')) return 'NUM' + code.slice(6);
+  return code;
+}
+
+let keybinds = loadKeybinds();
+let listeningAction = null; // 入力待ち中のアクション名
+
+// キー設定UIを描画
+function renderKeybindUI() {
+  const list = document.getElementById('keybind-list');
+  list.innerHTML = '';
+  Object.keys(KB_LABELS).forEach(action => {
+    const row = document.createElement('div');
+    row.className = 'keybind-row';
+
+    const label = document.createElement('span');
+    label.className = 'keybind-label';
+    label.textContent = KB_LABELS[action];
+
+    const keyEl = document.createElement('span');
+    keyEl.className = 'keybind-key';
+    keyEl.id = `kb-key-${action}`;
+    keyEl.textContent = codeToLabel(keybinds[action]);
+
+    const btn = document.createElement('button');
+    btn.className = 'keybind-change-btn';
+    btn.id = `kb-btn-${action}`;
+    btn.textContent = '変更';
+    btn.addEventListener('click', () => startListening(action));
+
+    row.appendChild(label);
+    row.appendChild(keyEl);
+    row.appendChild(btn);
+    list.appendChild(row);
+  });
+}
+
+// 入力待ちモード開始
+function startListening(action) {
+  listeningAction = action;
+  const keyEl = document.getElementById(`kb-key-${action}`);
+  if (keyEl) { keyEl.textContent = 'キーを押してください...'; keyEl.classList.add('listening'); }
+  // 他のボタンを無効化
+  document.querySelectorAll('.keybind-change-btn').forEach(b => b.disabled = true);
+  document.getElementById('keybind-close').disabled = true;
+  document.getElementById('keybind-reset').disabled = true;
+}
+
+// 入力待ち解除
+function stopListening() {
+  listeningAction = null;
+  document.querySelectorAll('.keybind-change-btn').forEach(b => b.disabled = false);
+  document.getElementById('keybind-close').disabled = false;
+  document.getElementById('keybind-reset').disabled = false;
+}
+
+// キー設定画面を開く（ゲーム中ならポーズ）
+function openKeybindOverlay() {
+  if (!document.getElementById('game-screen').classList.contains('hidden') && !gameOver) {
+    if (!paused) { paused = true; pauseBGM(); draw(); }
+  }
+  renderKeybindUI();
+  document.getElementById('keybind-overlay').classList.remove('hidden');
+}
+
+function closeKeybindOverlay() {
+  stopListening();
+  document.getElementById('keybind-overlay').classList.add('hidden');
+}
+
+document.getElementById('title-keybind-btn').addEventListener('click', openKeybindOverlay);
+document.getElementById('game-keybind-btn').addEventListener('click', openKeybindOverlay);
+
+document.getElementById('keybind-close').addEventListener('click', () => {
+  closeKeybindOverlay();
+  // ゲーム中だったらポーズ解除
+  if (!document.getElementById('game-screen').classList.contains('hidden') && !gameOver) {
+    paused = false; resumeBGM(); lastTime = performance.now(); animId = requestAnimationFrame(gameLoop);
+  }
+});
+
+document.getElementById('keybind-reset').addEventListener('click', () => {
+  keybinds = { ...KB_DEFAULT };
+  saveKeybinds();
+  renderKeybindUI();
+});
+
+// キー設定画面でのキー入力を捕捉
+document.addEventListener('keydown', e => {
+  if (!listeningAction) return;
+  e.preventDefault();
+  // Escape は変更キャンセル
+  if (e.code === 'Escape') { stopListening(); renderKeybindUI(); return; }
+  // 既に別のアクションに割り当て済みか確認
+  const conflict = Object.keys(keybinds).find(a => a !== listeningAction && keybinds[a] === e.code);
+  if (conflict) {
+    // 競合：入れ替える
+    keybinds[conflict] = keybinds[listeningAction];
+  }
+  keybinds[listeningAction] = e.code;
+  saveKeybinds();
+  stopListening();
+  renderKeybindUI();
+}, true); // capture phase で先に取る
+// ====== /キー設定 ======
+
+const SHAPES = [
+  null,
+  [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]], // I
+  [[1,1],[1,1]],                              // O
+  [[0,1,0],[1,1,1],[0,0,0]],                  // T
+  [[0,1,1],[1,1,0],[0,0,0]],                  // S
+  [[1,1,0],[0,1,1],[0,0,0]],                  // Z
+  [[1,0,0],[1,1,1],[0,0,0]],                  // J
+  [[0,0,1],[1,1,1],[0,0,0]],                  // L
+];
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const nextCanvas = document.getElementById('next-canvas');
+const nctx = nextCanvas.getContext('2d');
+const holdCanvas = document.getElementById('hold-canvas');
+const hctx = holdCanvas.getContext('2d');
+
+// ====== オンライン対戦 ======
+const urlParams = new URLSearchParams(location.search);
+const ROOM_ID   = urlParams.get('room');
+const IS_ONLINE = !!ROOM_ID;
+let myRole = null;  // 'player1' or 'player2'
+let opUnsubs = []; // Firebase監視の解除関数
+
+const opCanvas = document.getElementById('opponent-board');
+const opCtx    = opCanvas ? opCanvas.getContext('2d') : null;
+const OP_CELL  = 15; // 相手フィールドのセルサイズ（自分の半分）
+// ====== /オンライン対戦 ======
+
+const lineClearSE = new Audio('music/sword008.mp3');
+const gameOverSE  = new Audio('music/haiboku.mp3');
+
+// カウントダウンBGM: Web Audio API で合成
+let _cdNodes = []; // 再生中ノードを管理（stop用）
+const countdownSE = {
+  currentTime: 0,
+  play() { _playCountdownBGM(); },
+  pause() { _stopCountdownBGM(); },
+};
+
+function _stopCountdownBGM() {
+  _cdNodes.forEach(n => { try { n.stop(); } catch(e){} });
+  _cdNodes = [];
+}
+
+function _playCountdownBGM() {
+  _stopCountdownBGM();
+  if (!audioCtx) initAudio();
+  if (!audioCtx) return;
+
+  const t0  = audioCtx.currentTime + 0.02;
+  const BPM = 128;
+  const B   = 60 / BPM;       // 1拍 ≈ 0.469s
+  const b8  = B / 2;          // 8分音符
+
+  // ---- ユーティリティ ----
+  function note(freq, start, dur, type, vol, freqEnd) {
+    const osc = audioCtx.createOscillator();
+    const g   = audioCtx.createGain();
+    osc.connect(g); g.connect(masterGain);
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, start);
+    if (freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, start + dur * 0.8);
+    g.gain.setValueAtTime(vol, start);
+    g.gain.exponentialRampToValueAtTime(0.001, start + dur);
+    osc.start(start); osc.stop(start + dur + 0.01);
+    _cdNodes.push(osc);
+  }
+
+  function kick(start) {
+    note(160, start, 0.18, 'sine', 1.4, 45);
+  }
+
+  function snare(start) {
+    const sr  = audioCtx.sampleRate;
+    const len = Math.ceil(sr * 0.12);
+    const buf = audioCtx.createBuffer(1, len, sr);
+    const d   = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const hpf = audioCtx.createBiquadFilter();
+    hpf.type = 'highpass'; hpf.frequency.value = 1800;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.55, start);
+    g.gain.exponentialRampToValueAtTime(0.001, start + 0.12);
+    src.connect(hpf); hpf.connect(g); g.connect(masterGain);
+    src.start(start); src.stop(start + 0.13);
+    _cdNodes.push(src);
+  }
+
+  function hihat(start, vol = 0.22) {
+    const sr  = audioCtx.sampleRate;
+    const len = Math.ceil(sr * 0.045);
+    const buf = audioCtx.createBuffer(1, len, sr);
+    const d   = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const hpf = audioCtx.createBiquadFilter();
+    hpf.type = 'highpass'; hpf.frequency.value = 7000;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(vol, start);
+    g.gain.exponentialRampToValueAtTime(0.001, start + 0.045);
+    src.connect(hpf); hpf.connect(g); g.connect(masterGain);
+    src.start(start); src.stop(start + 0.05);
+    _cdNodes.push(src);
+  }
+
+  function synth(freq, start, dur, vol = 0.28) {
+    note(freq, start, dur, 'square', vol);
+    note(freq * 2, start, dur * 0.7, 'sine', vol * 0.15); // 倍音で艶を追加
+  }
+
+  // ---- シーケンス (8拍 = 約3.75秒) ----
+  // ビジュアルカウントダウン: t0+0=「3」, t0+B*2=「2」, t0+B*4=「1」, t0+B*5.9≈GO
+
+  // 拍1 (「3」表示タイミング)
+  kick(t0);         synth(261.63, t0, B * 0.7);   // C4
+  hihat(t0 + b8);
+  snare(t0 + B);    synth(329.63, t0 + B, B * 0.7); // E4
+  hihat(t0 + B + b8);
+
+  // 拍3 (「2」表示タイミング ≈ t0+B*2)
+  kick(t0 + B*2);   synth(392.00, t0 + B*2, B * 0.7); // G4
+  hihat(t0 + B*2 + b8);
+  snare(t0 + B*3);  synth(440.00, t0 + B*3, B * 0.7); // A4
+  hihat(t0 + B*3 + b8);
+
+  // 拍5 (「1」表示タイミング ≈ t0+B*4)
+  kick(t0 + B*4);   synth(523.25, t0 + B*4, B * 0.6); // C5
+  hihat(t0 + B*4 + b8);
+  snare(t0 + B*5);  synth(659.25, t0 + B*5, B * 0.5); // E5 (テンション↑)
+  hihat(t0 + B*5 + b8);
+
+  // GO! ホイッスル音
+  const goT = t0 + B * 5.85;
+  const goDelay = Math.max(0, goT - audioCtx.currentTime);
+  setTimeout(() => {
+    const whistleSE = new Audio('music/sei_ge_hoissuru02.mp3');
+    whistleSE.volume = 0.9;
+    whistleSE.play().catch(() => {});
+  }, goDelay * 1000);
+}
+
+let board, score, lines, level, dropInterval;
+let current, next, hold, canHold, gameOver, paused;
+let lastTime = 0, dropCounter = 0;
+let animId;
+
+function createBoard() {
+  return Array.from({length: ROWS}, () => new Array(COLS).fill(0));
+}
+
+function createPiece(type) {
+  return {
+    type,
+    shape: SHAPES[type].map(r => [...r]),
+    x: Math.floor(COLS / 2) - Math.floor(SHAPES[type][0].length / 2),
+    y: 0,
+  };
+}
+
+function randomType() {
+  return Math.floor(Math.random() * 7) + 1;
+}
+
+function rotate(shape) {
+  const rows = shape.length, cols = shape[0].length;
+  const result = Array.from({length: cols}, () => new Array(rows).fill(0));
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      result[c][rows - 1 - r] = shape[r][c];
+  return result;
+}
+
+function collide(piece, board, dx=0, dy=0, shape=piece.shape) {
+  for (let r = 0; r < shape.length; r++) {
+    for (let c = 0; c < shape[r].length; c++) {
+      if (!shape[r][c]) continue;
+      const nx = piece.x + c + dx;
+      const ny = piece.y + r + dy;
+      if (nx < 0 || nx >= COLS || ny >= ROWS) return true;
+      if (ny >= 0 && board[ny][nx]) return true;
+    }
+  }
+  return false;
+}
+
+function merge(piece, board) {
+  piece.shape.forEach((row, r) => {
+    row.forEach((val, c) => {
+      if (val) board[piece.y + r][piece.x + c] = piece.type;
+    });
+  });
+}
+
+function clearLines() {
+  let cleared = 0;
+  for (let r = ROWS - 1; r >= 0; r--) {
+    if (board[r].every(v => v !== 0)) {
+      board.splice(r, 1);
+      board.unshift(new Array(COLS).fill(0));
+      cleared++;
+      r++; // 再チェック
+    }
+  }
+  if (cleared > 0) {
+    lineClearSE.currentTime = 0;
+    lineClearSE.play();
+    const pts = [0, 100, 300, 500, 800];
+    score += (pts[cleared] || 800) * level;
+    lines += cleared;
+    level = Math.floor(lines / 10) + 1;
+    dropInterval = Math.max(100, 500 - (level - 1) * 40);
+    updateUI();
+    // ★ オンライン: スコア送信 + 攻撃キュー送信
+    if (IS_ONLINE && myRole && window._db) {
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/score`), score);
+      sendAttack(cleared);
+    }
+  }
+}
+
+function spawnNext() {
+  current = next || createPiece(randomType());
+  next = createPiece(randomType());
+  canHold = true;
+  if (collide(current, board)) {
+    current = null;
+    gameOver = true;
+    // ★ オンライン: ゲームオーバーフラグを送信
+    handleGameOver();
+    stopBGM();
+    gameOverSE.currentTime = 0;
+    gameOverSE.play();
+    saveHighScore(score);
+    renderHighScores();
+    startGameOverAnim();
+  }
+}
+
+function doHold() {
+  if (!canHold) return;
+  canHold = false;
+  if (hold === null || hold === undefined) {
+    hold = current.type;
+    spawnNext();
+    canHold = false; // spawnNextがtrueにするので上書き
+  } else {
+    const prevHold = hold;
+    hold = current.type;
+    current = createPiece(prevHold);
+  }
+}
+
+function hardDrop() {
+  while (!collide(current, board, 0, 1)) {
+    current.y++;
+  }
+  lockPiece();
+}
+
+const flashCells = []; // {x, y, t}
+const FLASH_DURATION = 300; // ms
+
+function lockPiece() {
+  const now = performance.now();
+  current.shape.forEach((row, r) => row.forEach((val, c) => {
+    if (val) flashCells.push({ x: current.x + c, y: current.y + r, t: now });
+  }));
+  playLockSound();
+  merge(current, board);
+  clearLines();
+  spawnNext();
+  // ★ オンライン: 盤面を送信（スコアはclearLines内で送信済み）
+  if (IS_ONLINE && myRole && window._db) {
+    window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+  }
+}
+
+function updateUI() {
+  document.getElementById('score-display').textContent = score;
+  document.getElementById('level-display').textContent = level;
+  document.getElementById('lines-display').textContent = lines;
+}
+
+function drawCell(context, x, y, type, size=CELL) {
+  if (!type) return;
+  const color = COLORS[type];
+  context.fillStyle = color;
+  context.fillRect(x * size + 1, y * size + 1, size - 2, size - 2);
+  // ハイライト
+  context.fillStyle = 'rgba(255,255,255,0.2)';
+  context.fillRect(x * size + 1, y * size + 1, size - 2, 4);
+  context.fillRect(x * size + 1, y * size + 1, 4, size - 2);
+  // シャドウ
+  context.fillStyle = 'rgba(0,0,0,0.3)';
+  context.fillRect(x * size + 1, y * size + size - 5, size - 2, 4);
+  context.fillRect(x * size + size - 5, y * size + 1, 4, size - 2);
+}
+
+function getGhostY() {
+  let gy = current.y;
+  while (!collide(current, board, 0, gy - current.y + 1)) gy++;
+  return gy;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // グリッド線
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 1;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      ctx.strokeRect(c * CELL, r * CELL, CELL, CELL);
+    }
+  }
+
+  // ボード
+  board.forEach((row, r) => {
+    row.forEach((val, c) => {
+      drawCell(ctx, c, r, val);
+    });
+  });
+
+  // ゴースト
+  if (current) {
+    const gy = getGhostY();
+    current.shape.forEach((row, r) => {
+      row.forEach((val, c) => {
+        if (val && gy + r !== current.y + r) {
+          ctx.fillStyle = 'rgba(255,255,255,0.1)';
+          ctx.fillRect((current.x + c) * CELL + 1, (gy + r) * CELL + 1, CELL - 2, CELL - 2);
+        }
+      });
+    });
+
+    // 現在のピース
+    current.shape.forEach((row, r) => {
+      row.forEach((val, c) => {
+        if (val) drawCell(ctx, current.x + c, current.y + r, current.type);
+      });
+    });
+  }
+
+  // NEXTピース
+  drawMiniPiece(nctx, nextCanvas, next ? next.type : null, false);
+  // HOLDピース（使用済みの場合は暗く表示）
+  drawMiniPiece(hctx, holdCanvas, hold || null, !canHold);
+
+  // ロックフラッシュ
+  const now = performance.now();
+  for (let i = flashCells.length - 1; i >= 0; i--) {
+    const f = flashCells[i];
+    const age = now - f.t;
+    if (age > FLASH_DURATION) { flashCells.splice(i, 1); continue; }
+    const alpha = (1 - age / FLASH_DURATION) * 0.85;
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.fillRect(f.x * CELL + 1, f.y * CELL + 1, CELL - 2, CELL - 2);
+  }
+
+  // ポーズ表示
+  if (paused) {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 48px Courier New';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('PAUSE', canvas.width / 2, canvas.height / 2);
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
+  }
+}
+
+function drawMiniPiece(context, cnv, type, dimmed) {
+  context.clearRect(0, 0, cnv.width, cnv.height);
+  if (!type) return;
+  const s = SHAPES[type];
+  const ns = 24;
+  let minR = s.length, maxR = 0, minC = s[0].length, maxC = 0;
+  s.forEach((row, r) => row.forEach((val, c) => {
+    if (val) { minR = Math.min(minR, r); maxR = Math.max(maxR, r); minC = Math.min(minC, c); maxC = Math.max(maxC, c); }
+  }));
+  const ox = (cnv.width - (maxC - minC + 1) * ns) / 2 - minC * ns;
+  const oy = (cnv.height - (maxR - minR + 1) * ns) / 2 - minR * ns;
+  context.globalAlpha = dimmed ? 0.35 : 1.0;
+  s.forEach((row, r) => {
+    row.forEach((val, c) => {
+      if (!val) return;
+      context.fillStyle = COLORS[type];
+      context.fillRect(ox + c * ns + 1, oy + r * ns + 1, ns - 2, ns - 2);
+      context.fillStyle = 'rgba(255,255,255,0.2)';
+      context.fillRect(ox + c * ns + 1, oy + r * ns + 1, ns - 2, 3);
+    });
+  });
+  context.globalAlpha = 1.0;
+}
+
+function gameLoop(timestamp) {
+  if (gameOver || paused) return;
+  const dt = timestamp - lastTime;
+  lastTime = timestamp;
+  dropCounter += dt;
+  if (dropCounter >= dropInterval) {
+    dropCounter = 0;
+    if (!collide(current, board, 0, 1)) {
+      current.y++;
+    } else {
+      lockPiece();
+    }
+  }
+  draw();
+  if (!gameOver) animId = requestAnimationFrame(gameLoop);
+}
+
+let gameOverAnimId = null;
+
+function startGameOverAnim() {
+  cancelAnimationFrame(gameOverAnimId);
+  const animDiv = document.getElementById('gameover-anim');
+  animDiv.innerHTML = '';
+  animDiv.classList.remove('hidden');
+
+  const chars = [...'ゲームオーバー'];
+  const fontSize = 72;
+  const charWidth = fontSize;
+  const totalWidth = chars.length * charWidth;
+  const targetLeft = (window.innerWidth - totalWidth) / 2;
+  const targetTop = window.innerHeight / 2 - fontSize / 2;
+  const CHAR_DELAY = 130;
+  const FALL_DURATION = 480;
+  const animStart = performance.now();
+
+  function easeOutBack(t) {
+    const c1 = 1.6, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+
+  const spans = chars.map((ch, i) => {
+    const span = document.createElement('span');
+    span.className = 'go-char';
+    span.textContent = ch;
+    span.style.left = `${targetLeft + i * charWidth}px`;
+    span.style.top = `${-(fontSize + 20)}px`;
+    animDiv.appendChild(span);
+    return span;
+  });
+
+  function frame(timestamp) {
+    const elapsed = timestamp - animStart;
+    let allDone = true;
+    spans.forEach((span, i) => {
+      const t = Math.min(Math.max((elapsed - i * CHAR_DELAY) / FALL_DURATION, 0), 1);
+      if (t < 1) allDone = false;
+      if (elapsed < i * CHAR_DELAY) return;
+      const fromY = -(fontSize + 20);
+      const y = fromY + (targetTop - fromY) * easeOutBack(t);
+      span.style.top = `${y}px`;
+    });
+
+    if (!allDone) {
+      gameOverAnimId = requestAnimationFrame(frame);
+    } else {
+      setTimeout(() => {
+        animDiv.classList.add('hidden');
+        if (!IS_ONLINE) {
+          showOverlay('ゲームオーバー', `スコア: ${score.toLocaleString()}`, 'もう一度');
+        }
+      }, 600);
+    }
+  }
+
+  gameOverAnimId = requestAnimationFrame(frame);
+}
+
+function startGame(initialLevel = 1) {
+  lastLevel = initialLevel;
+  board = createBoard();
+  score = 0;
+  lines = 0;
+  level = initialLevel;
+  dropInterval = Math.max(100, 500 - (initialLevel - 1) * 40);
+  dropCounter = 0;
+  gameOver = false;
+  paused = false;
+  hold = null;
+  canHold = true;
+  next = createPiece(randomType());
+  spawnNext();
+  updateUI();
+  lastTime = performance.now();
+  gameOverSE.pause();
+  gameOverSE.currentTime = 0;
+  cancelAnimationFrame(gameOverAnimId);
+  document.getElementById('gameover-anim').classList.add('hidden');
+  cancelAnimationFrame(animId);
+  animId = requestAnimationFrame(gameLoop);
+  if (!bgmPlaying) startBGM(MELODY_GAME);
+  else if (activeMelody !== MELODY_GAME) startBGM(MELODY_GAME);
+  // 相手フィールド: オンライン時のみ表示
+  document.getElementById('opponent-col').classList.toggle('hidden', !IS_ONLINE);
+}
+
+function showOverlay(title, msg, btnText) {
+  document.getElementById('overlay-title').textContent = title;
+  document.getElementById('overlay-msg').textContent = msg;
+  document.getElementById('overlay-btn').textContent = btnText;
+  document.getElementById('overlay').classList.remove('hidden');
+}
+
+function hideOverlay() {
+  document.getElementById('overlay').classList.add('hidden');
+}
+
+// ====== ハイスコア ======
+const HS_KEY = 'tetris_highscores';
+const HS_MAX = 5;
+
+function loadHighScores() {
+  try { return JSON.parse(localStorage.getItem(HS_KEY)) || []; }
+  catch { return []; }
+}
+
+function saveHighScore(newScore) {
+  if (newScore === 0) return;
+  const scores = loadHighScores();
+  scores.push(newScore);
+  scores.sort((a, b) => b - a);
+  scores.splice(HS_MAX);
+  localStorage.setItem(HS_KEY, JSON.stringify(scores));
+}
+
+function renderHighScores() {
+  const scores = loadHighScores();
+  const html = scores.length === 0
+    ? '<li><span style="color:#555">記録なし</span></li>'
+    : scores.map((s, i) =>
+        `<li class="${i === 0 ? 'top1' : ''}">
+          <span class="rank">${i + 1}.</span>
+          <span>${s.toLocaleString()}</span>
+        </li>`
+      ).join('');
+  document.getElementById('title-ranking-list').innerHTML = html;
+}
+// ====== /ハイスコア ======
+
+// ====== BGM ======
+let audioCtx = null, masterGain = null;
+let bgmPlaying = false, bgmLoopTimeout = null;
+
+const BPM = 150;
+const Q = 60 / BPM;
+
+const NOTE_FREQ = {
+  'C4':261.63,'D4':293.66,'E4':329.63,'F4':349.23,'G4':392.00,'A4':440.00,'B4':493.88,
+  'C5':523.25,'D5':587.33,'E5':659.25,'F5':698.46,'G5':783.99,'A5':880.00,'-':0
+};
+
+// タイトル用: Korobeiniki (Tetris Theme A)
+const MELODY_TITLE = [
+  ['E5',Q],  ['B4',Q/2],['C5',Q/2],['D5',Q],  ['C5',Q/2],['B4',Q/2],
+  ['A4',Q],  ['A4',Q/2],['C5',Q/2],['E5',Q],  ['D5',Q/2],['C5',Q/2],
+  ['B4',Q*1.5],['C5',Q/2],['D5',Q],['E5',Q],
+  ['C5',Q],  ['A4',Q],  ['A4',Q*2],
+  ['-',Q/2], ['D5',Q],  ['F5',Q/2],['A5',Q],  ['G5',Q/2],['F5',Q/2],
+  ['E5',Q*1.5],['C5',Q/2],['E5',Q],['D5',Q/2],['C5',Q/2],
+  ['B4',Q],  ['B4',Q/2],['C5',Q/2],['D5',Q],  ['E5',Q],
+  ['C5',Q],  ['A4',Q],  ['A4',Q*2],
+];
+
+// ゲーム用: オリジナルアップテンポメロディ
+const QG = 60 / 180; // 速めのBPM
+const MELODY_GAME = [
+  // フレーズA
+  ['A4',QG/2],['C5',QG/2],['E5',QG],  ['A5',QG/2],['G5',QG/2],
+  ['F5',QG],  ['E5',QG/2],['D5',QG/2],['C5',QG],  ['-',QG],
+  ['E5',QG/2],['D5',QG/2],['C5',QG],  ['B4',QG/2],['A4',QG/2],
+  ['A4',QG*2],
+  // フレーズB
+  ['C5',QG/2],['D5',QG/2],['E5',QG],  ['G5',QG/2],['F5',QG/2],
+  ['E5',QG],  ['D5',QG/2],['C5',QG/2],['D5',QG],  ['-',QG],
+  ['E5',QG],  ['F5',QG/2],['E5',QG/2],['D5',QG],  ['C5',QG/2],['B4',QG/2],
+  ['A4',QG*2],
+  // フレーズC
+  ['A5',QG/2],['G5',QG/2],['F5',QG],  ['E5',QG/2],['D5',QG/2],
+  ['C5',QG],  ['D5',QG/2],['E5',QG/2],['F5',QG],  ['-',QG],
+  ['G5',QG/2],['F5',QG/2],['E5',QG],  ['D5',QG/2],['C5',QG/2],
+  ['A4',QG*2],
+  // フレーズD
+  ['E5',QG/2],['F5',QG/2],['G5',QG],  ['A5',QG/2],['G5',QG/2],
+  ['F5',QG],  ['E5',QG/2],['F5',QG/2],['G5',QG],  ['-',QG],
+  ['F5',QG/2],['E5',QG/2],['D5',QG],  ['E5',QG/2],['D5',QG/2],
+  ['C5',QG*2],
+];
+
+function initAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.18;
+  masterGain.connect(audioCtx.destination);
+}
+
+function scheduleNote(freq, start, dur) {
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.connect(g);
+  g.connect(masterGain);
+  osc.type = 'square';
+  osc.frequency.value = freq;
+  g.gain.setValueAtTime(0.5, start);
+  g.gain.exponentialRampToValueAtTime(0.001, start + dur * 0.88);
+  osc.start(start);
+  osc.stop(start + dur);
+}
+
+let activeMelody = MELODY_TITLE;
+
+function scheduleBGMLoop(startTime) {
+  if (!bgmPlaying) return;
+  const melody = activeMelody;
+  const totalDur = melody.reduce((s,[,d])=>s+d, 0);
+  let t = startTime;
+  for (const [note, dur] of melody) {
+    if (NOTE_FREQ[note]) scheduleNote(NOTE_FREQ[note], t, dur * 0.92);
+    t += dur;
+  }
+  const delay = (startTime + totalDur - audioCtx.currentTime - 0.15) * 1000;
+  bgmLoopTimeout = setTimeout(() => scheduleBGMLoop(startTime + totalDur), Math.max(0, delay));
+}
+
+function startBGM(melody = MELODY_TITLE) {
+  stopBGM();
+  activeMelody = melody;
+  initAudio();
+  bgmPlaying = true;
+  scheduleBGMLoop(audioCtx.currentTime + 0.1);
+}
+
+function stopBGM(fadeTime = 0.35) {
+  bgmPlaying = false;
+  clearTimeout(bgmLoopTimeout);
+  if (!audioCtx) return;
+  // 古いコンテキストはフェードアウト後に非同期で閉じる
+  const oldCtx  = audioCtx;
+  const oldGain = masterGain;
+  audioCtx  = null;
+  masterGain = null;
+  try {
+    oldGain.gain.setValueAtTime(oldGain.gain.value, oldCtx.currentTime);
+    oldGain.gain.linearRampToValueAtTime(0, oldCtx.currentTime + fadeTime);
+  } catch(e) {}
+  setTimeout(() => { try { oldCtx.close(); } catch(e) {} }, (fadeTime + 0.1) * 1000);
+}
+
+function pauseBGM()  { if (masterGain) masterGain.gain.value = 0; }
+function resumeBGM() { if (masterGain) masterGain.gain.value = 0.18; }
+
+function playLockSound() {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.connect(g);
+  g.connect(masterGain);
+  const t = audioCtx.currentTime;
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(280, t);
+  osc.frequency.exponentialRampToValueAtTime(70, t + 0.09);
+  g.gain.setValueAtTime(1.2, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
+  osc.start(t);
+  osc.stop(t + 0.12);
+}
+
+function playRotateSound() {
+  if (!audioCtx) return;
+  const t   = audioCtx.currentTime;
+  const dur = 0.18;
+
+  // --- ノイズ層: 高域から中域へ素早くスイープ（シュッの空気感） ---
+  const sr      = audioCtx.sampleRate;
+  const bufSize = Math.ceil(sr * dur);
+  const buf     = audioCtx.createBuffer(1, bufSize, sr);
+  const ch      = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) ch[i] = Math.random() * 2 - 1;
+
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buf;
+
+  // ハイパスで不要な低域をカット
+  const hpf = audioCtx.createBiquadFilter();
+  hpf.type = 'highpass';
+  hpf.frequency.setValueAtTime(3200, t);
+  hpf.frequency.exponentialRampToValueAtTime(800, t + dur);
+
+  // バンドパスで「シュ」の帯域を強調
+  const bpf = audioCtx.createBiquadFilter();
+  bpf.type = 'bandpass';
+  bpf.frequency.setValueAtTime(5500, t);
+  bpf.frequency.exponentialRampToValueAtTime(1400, t + dur * 0.85);
+  bpf.Q.value = 0.9;
+
+  const gNoise = audioCtx.createGain();
+  gNoise.gain.setValueAtTime(0, t);
+  gNoise.gain.linearRampToValueAtTime(0.7, t + 0.012);   // 素早いアタック
+  gNoise.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+  noise.connect(hpf);
+  hpf.connect(bpf);
+  bpf.connect(gNoise);
+  gNoise.connect(masterGain);
+  noise.start(t);
+  noise.stop(t + dur + 0.01);
+
+  // --- トーン層: 高めの音程がスッと下がる（シュッのキャラクタ） ---
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(1800, t);
+  osc.frequency.exponentialRampToValueAtTime(480, t + dur * 0.7);
+
+  const gTone = audioCtx.createGain();
+  gTone.gain.setValueAtTime(0.18, t);
+  gTone.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.75);
+
+  osc.connect(gTone);
+  gTone.connect(masterGain);
+  osc.start(t);
+  osc.stop(t + dur);
+}
+// ====== /BGM ======
+
+// ===== タイトル背景アニメーション =====
+const titleBgCanvas = document.getElementById('title-bg');
+const tbCtx = titleBgCanvas.getContext('2d');
+let titleBgAnimId = null;
+const BG_CELL = 26;
+const bgPieces = [];
+
+function resizeTitleBg() {
+  titleBgCanvas.width  = window.innerWidth;
+  titleBgCanvas.height = window.innerHeight;
+}
+
+function spawnBgPiece() {
+  const type = Math.floor(Math.random() * 7) + 1;
+  const shape = SHAPES[type].map(r => [...r]);
+  const rows = shape.length, cols = shape[0].length;
+  bgPieces.push({
+    type, shape,
+    x: -(cols * BG_CELL + 20),
+    y: Math.random() * (titleBgCanvas.height + rows * BG_CELL) - rows * BG_CELL,
+    speed: 0.6 + Math.random() * 1.4,
+    rotation: Math.random() * Math.PI * 2,
+    rotSpeed: (Math.random() - 0.5) * 0.012,
+    alpha: 0.12 + Math.random() * 0.18,
+  });
+}
+
+function drawBgPiece(p) {
+  const cols = p.shape[0].length, rows = p.shape.length;
+  tbCtx.save();
+  tbCtx.globalAlpha = p.alpha;
+  tbCtx.translate(p.x + cols * BG_CELL / 2, p.y + rows * BG_CELL / 2);
+  tbCtx.rotate(p.rotation);
+  p.shape.forEach((row, r) => {
+    row.forEach((val, c) => {
+      if (!val) return;
+      const px = (c - cols / 2) * BG_CELL;
+      const py = (r - rows / 2) * BG_CELL;
+      tbCtx.fillStyle = COLORS[p.type];
+      tbCtx.fillRect(px + 1, py + 1, BG_CELL - 2, BG_CELL - 2);
+      tbCtx.fillStyle = 'rgba(255,255,255,0.15)';
+      tbCtx.fillRect(px + 1, py + 1, BG_CELL - 2, 4);
+      tbCtx.fillRect(px + 1, py + 1, 4, BG_CELL - 2);
+    });
+  });
+  tbCtx.restore();
+}
+
+let bgSpawnTimer = 0;
+function titleBgFrame() {
+  if (document.getElementById('title-screen').classList.contains('hidden')) return;
+
+  tbCtx.clearRect(0, 0, titleBgCanvas.width, titleBgCanvas.height);
+
+  bgSpawnTimer++;
+  if (bgSpawnTimer >= 38) { spawnBgPiece(); bgSpawnTimer = 0; }
+
+  for (let i = bgPieces.length - 1; i >= 0; i--) {
+    const p = bgPieces[i];
+    p.x += p.speed;
+    p.rotation += p.rotSpeed;
+    if (p.x > titleBgCanvas.width + 100) { bgPieces.splice(i, 1); continue; }
+    drawBgPiece(p);
+  }
+
+  titleBgAnimId = requestAnimationFrame(titleBgFrame);
+}
+
+function startTitleBgAnim() {
+  resizeTitleBg();
+  bgSpawnTimer = 0;
+  // 初期配置：最初から画面上に散らばらせる
+  for (let i = 0; i < 18; i++) {
+    spawnBgPiece();
+    const p = bgPieces[bgPieces.length - 1];
+    p.x = Math.random() * titleBgCanvas.width;
+  }
+  cancelAnimationFrame(titleBgAnimId);
+  titleBgAnimId = requestAnimationFrame(titleBgFrame);
+}
+
+function stopTitleBgAnim() {
+  cancelAnimationFrame(titleBgAnimId);
+  bgPieces.length = 0;
+}
+
+window.addEventListener('resize', () => {
+  if (!document.getElementById('title-screen').classList.contains('hidden')) resizeTitleBg();
+});
+// ===== /タイトル背景アニメーション =====
+
+// ===== ページ切り替え =====
+function showPage(name) {
+  document.getElementById('title-screen').classList.toggle('hidden',   name !== 'title');
+  document.getElementById('waiting-screen').classList.toggle('hidden', name !== 'waiting');
+  document.getElementById('game-screen').classList.toggle('hidden',    name !== 'game');
+  if (name === 'title') startTitleBgAnim();
+  else stopTitleBgAnim();
+}
+
+function goToTitle() {
+  hideOverlay();
+  document.getElementById('online-result').classList.add('hidden');
+  document.getElementById('opponent-col').classList.add('hidden');
+  stopBGM();
+  gameOverSE.pause();
+  gameOverSE.currentTime = 0;
+  cancelAnimationFrame(gameOverAnimId);
+  document.getElementById('gameover-anim').classList.add('hidden');
+  renderHighScores();
+  showPage('title');
+  startBGM(MELODY_TITLE);
+}
+
+// ===== 難易度選択 =====
+function showDifficulty(onSelect) {
+  document.getElementById('difficulty-overlay').classList.remove('hidden');
+  document.querySelectorAll('.diff-btn').forEach(btn => {
+    btn.onclick = () => {
+      document.getElementById('difficulty-overlay').classList.add('hidden');
+      onSelect(Number(btn.dataset.level));
+    };
+  });
+  document.getElementById('diff-back-btn').onclick = () => {
+    document.getElementById('difficulty-overlay').classList.add('hidden');
+    showPage('title');
+  };
+}
+
+// ===== カウントダウン =====
+function startCountdown(onComplete) {
+  // 前のゲームのボードを消去してクリーンな状態で表示
+  board = createBoard();
+  current = null;
+  next = null;
+  hold = null;
+  draw();
+
+  const overlay = document.getElementById('countdown-overlay');
+  const numEl   = document.getElementById('countdown-number');
+  overlay.classList.remove('hidden');
+  stopBGM();
+  countdownSE.currentTime = 0;
+  countdownSE.play();
+
+  let count = 3;
+  function tick() {
+    numEl.textContent = count;
+    numEl.style.animation = 'none';
+    numEl.offsetHeight; // reflow でアニメリセット
+    numEl.style.animation = 'countPop 0.95s ease-out forwards';
+    count--;
+    if (count > 0) {
+      setTimeout(tick, 1000);
+    } else {
+      setTimeout(() => {
+        overlay.classList.add('hidden');
+        onComplete();
+      }, 950);
+    }
+  }
+  tick();
+}
+
+// タイトル → 難易度選択 → カウントダウン → ゲーム開始
+document.getElementById('title-start-btn').addEventListener('click', () => {
+  showDifficulty(level => {
+    showPage('game');
+    startCountdown(() => startGame(level));
+  });
+});
+
+// ゲームオーバー → もう一度（同じ難易度で再挑戦）
+let lastLevel = 1;
+document.getElementById('overlay-btn').addEventListener('click', () => {
+  hideOverlay();
+  startCountdown(() => startGame(lastLevel));
+});
+
+// ゲームオーバー → タイトルへ
+document.getElementById('overlay-title-btn').addEventListener('click', goToTitle);
+
+// ホームボタン → 確認ダイアログ表示
+document.getElementById('home-btn').addEventListener('click', () => {
+  if (!paused) {
+    paused = true;
+    pauseBGM();
+    draw();
+  }
+  document.getElementById('home-confirm').classList.remove('hidden');
+});
+
+// 確認ダイアログ「戻る」
+document.getElementById('home-confirm-ok').addEventListener('click', () => {
+  document.getElementById('home-confirm').classList.add('hidden');
+  cancelAnimationFrame(animId);
+  gameOver = true;
+  if (IS_ONLINE) cleanupRoom();
+  goToTitle();
+});
+
+// 確認ダイアログ「キャンセル」
+document.getElementById('home-confirm-cancel').addEventListener('click', () => {
+  document.getElementById('home-confirm').classList.add('hidden');
+  paused = false;
+  resumeBGM();
+  lastTime = performance.now();
+  animId = requestAnimationFrame(gameLoop);
+});
+
+renderHighScores();
+startTitleBgAnim();
+
+// タイトル画面の初回操作でBGM開始（ブラウザのオートプレイ制限対策）
+function onFirstInteraction() {
+  if (!bgmPlaying) startBGM(MELODY_TITLE);
+  document.removeEventListener('click', onFirstInteraction);
+  document.removeEventListener('keydown', onFirstInteraction);
+}
+document.addEventListener('click', onFirstInteraction);
+document.addEventListener('keydown', onFirstInteraction);
+
+document.addEventListener('keydown', e => {
+  // タイトル画面でSpaceスタート（キー設定中は無視）
+  if (!document.getElementById('title-screen').classList.contains('hidden')) {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      showDifficulty(level => {
+        showPage('game');
+        startCountdown(() => startGame(level));
+      });
+    }
+    return;
+  }
+
+  // ゲームオーバーオーバーレイ表示中は操作無効
+  if (!document.getElementById('overlay').classList.contains('hidden')) return;
+
+  if (gameOver) return;
+  if (paused && e.code !== keybinds.pause) return;
+
+  const code = e.code;
+  if (code === keybinds.left) {
+    e.preventDefault();
+    if (!collide(current, board, -1, 0)) current.x--;
+  } else if (code === keybinds.right) {
+    e.preventDefault();
+    if (!collide(current, board, 1, 0)) current.x++;
+  } else if (code === keybinds.down) {
+    e.preventDefault();
+    if (!collide(current, board, 0, 1)) { current.y++; dropCounter = 0; }
+  } else if (code === keybinds.rotate) {
+    e.preventDefault();
+    const rotated = rotate(current.shape);
+    if (!collide(current, board, 0, 0, rotated)) {
+      current.shape = rotated; playRotateSound();
+    } else if (!collide(current, board, 1, 0, rotated)) {
+      current.shape = rotated; current.x++; playRotateSound();
+    } else if (!collide(current, board, -1, 0, rotated)) {
+      current.shape = rotated; current.x--; playRotateSound();
+    }
+  } else if (code === keybinds.hardDrop) {
+    e.preventDefault();
+    hardDrop();
+  } else if (code === keybinds.hold) {
+    e.preventDefault();
+    doHold();
+  } else if (code === keybinds.pause) {
+    paused = !paused;
+    if (!paused) {
+      resumeBGM();
+      lastTime = performance.now();
+      animId = requestAnimationFrame(gameLoop);
+    } else {
+      pauseBGM();
+      draw();
+    }
+  }
+  draw();
+});
+
+// ====== オンライン対戦 ======
+
+// ニックネーム・UUID管理
+let myNickname = sessionStorage.getItem('tetris_nickname') || 'Player';
+let myUUID = sessionStorage.getItem('tetris_uuid');
+if (!myUUID) {
+  myUUID = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  sessionStorage.setItem('tetris_uuid', myUUID);
+}
+
+let currentWins = 0;
+let onlineGameState = null;
+let gameStateUnsub = null;
+let bothReadyUnsub = null;
+
+function makePlayerData(nickname) {
+  return { name: nickname || 'Player', uuid: myUUID, ready: false, board: null, score: 0, wins: 0, isGameOver: false };
+}
+
+// ---- 入室処理（onValue 一回読み + set） ----
+function joinRoom(nickname) {
+  if (!window._db) {
+    document.getElementById('online-status').textContent = 'Firebase未初期化';
+    return;
+  }
+  const statusEl = document.getElementById('online-status');
+  if (statusEl) statusEl.textContent = '接続中...';
+
+  const roomRef = window._ref(window._db, `rooms/${ROOM_ID}`);
+  const unsub = window._onValue(roomRef, snap => {
+    unsub(); // 一回だけ読む
+    const data = snap.val();
+
+    // --- 再接続チェック ---
+    if (data && data.player1 && data.player1.uuid === myUUID) {
+      myRole = 'player1';
+    } else if (data && data.player2 && data.player2.uuid === myUUID) {
+      myRole = 'player2';
+    } else if (!data || !data.player1 || !data.player1.uuid) {
+      // player1 スロットが空 → player1として入室
+      myRole = 'player1';
+      window._update(window._ref(window._db, `rooms/${ROOM_ID}`), {
+        config:  { maxWins: 3, gameState: 'waiting' },
+        player1: makePlayerData(nickname),
+      });
+    } else if (!data.player2 || !data.player2.uuid) {
+      // player2 スロットが空 → player2として入室
+      myRole = 'player2';
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/player2`), makePlayerData(nickname));
+    } else {
+      if (statusEl) statusEl.textContent = 'ルームが満員です';
+      return;
+    }
+
+    registerDisconnectHandler();
+    showPage('waiting');
+    initWaitingScreen();
+    watchGameState();
+    watchBothReady();
+  }, err => {
+    console.error('joinRoom error:', err);
+    if (statusEl) statusEl.textContent = '接続エラー: ' + err.message;
+  });
+}
+
+// ---- 切断処理 ----
+function registerDisconnectHandler() {
+  window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`)).remove();
+  window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`)).set('waiting');
+}
+
+function watchOpponentDisconnect() {
+  const opRole = myRole === 'player1' ? 'player2' : 'player1';
+  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}`), snap => {
+    if (snap.val() === null && onlineGameState === 'playing') {
+      showOnlineResult('相手が切断しました', 'あなたの勝ち！', false, '');
+      cleanupRoom();
+    }
+  });
+}
+
+// ---- 待機画面 ----
+function updatePlayerSlot(role, data) {
+  const nameEl  = document.getElementById(`slot-${role}-name`);
+  const readyEl = document.getElementById(`slot-${role}-ready`);
+  if (!nameEl || !readyEl) return;
+  nameEl.textContent  = data ? (data.name || '???') : '待機中...';
+  readyEl.textContent = data ? (data.ready ? '準備完了 ✓' : '未準備') : '';
+  readyEl.className   = 'slot-ready' + (data && data.ready ? ' ready' : '');
+}
+
+function initWaitingScreen() {
+  document.getElementById('waiting-room-label').textContent = ROOM_ID;
+  document.getElementById('ready-btn').disabled = true;
+  document.getElementById('waiting-status').textContent = '';
+  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
+    const data = snap.val() || {};
+    updatePlayerSlot('p1', data.player1);
+    updatePlayerSlot('p2', data.player2);
+    document.getElementById('wins-p1').textContent = data.player1?.wins ?? 0;
+    document.getElementById('wins-p2').textContent = data.player2?.wins ?? 0;
+    if (data.player1 && data.player2) document.getElementById('ready-btn').disabled = false;
+  });
+}
+
+document.getElementById('ready-btn').addEventListener('click', () => {
+  document.getElementById('ready-btn').disabled = true;
+  window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/ready`), true);
+  document.getElementById('waiting-status').textContent = '相手の準備を待っています...';
+});
+
+document.getElementById('waiting-cancel-btn').addEventListener('click', () => {
+  cleanupRoom(); showPage('title');
+});
+
+// ---- gameState 管理 ----
+function watchBothReady() {
+  if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
+  bothReadyUnsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
+    const data = snap.val();
+    if (
+      data?.player1?.ready === true &&
+      data?.player2?.ready === true &&
+      data?.config?.gameState === 'waiting' &&
+      myRole === 'player1'
+    ) {
+      bothReadyUnsub(); bothReadyUnsub = null;
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'countdown');
+    }
+  });
+}
+
+function watchGameState() {
+  if (gameStateUnsub) gameStateUnsub();
+  gameStateUnsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), snap => {
+    const prevState = onlineGameState;
+    const state = snap.val();
+    onlineGameState = state;
+    if (state === 'countdown' && prevState !== 'countdown') {
+      startOnlineCountdown(() => {
+        // ローカルの勝利数をDBから同期
+        window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/wins`), snap => {
+          currentWins = snap.val() ?? 0;
+        }, { onlyOnce: true });
+        if (myRole === 'player1') {
+          window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'playing');
+        }
+        showPage('game');
+        startGame(1);
+        watchOpponentDisconnect();
+        watchAttackQueue();
+        watchOpponentGameOver();
+        listenOpponentBoard();
+      });
+    } else if (state === 'result' && prevState !== 'result') {
+      showOnlineResultFromDB();
+    }
+  });
+}
+
+function startOnlineCountdown(callback) {
+  showPage('game');
+  board = createBoard(); current = null; next = null; hold = null; draw();
+  const overlay = document.getElementById('countdown-overlay');
+  const numEl   = document.getElementById('countdown-number');
+  overlay.classList.remove('hidden');
+  stopBGM();
+  countdownSE.currentTime = 0; countdownSE.play();
+  let count = 3;
+  function tick() {
+    numEl.textContent = count;
+    numEl.style.animation = 'none'; numEl.offsetHeight;
+    numEl.style.animation = 'countPop 0.95s ease-out forwards';
+    count--;
+    if (count > 0) setTimeout(tick, 1000);
+    else setTimeout(() => { overlay.classList.add('hidden'); callback(); }, 950);
+  }
+  tick();
+}
+
+// ---- 攻撃キュー ----
+function sendAttack(clearedLines) {
+  const attackLines = [0, 0, 1, 2, 4][clearedLines] ?? 4;
+  if (!attackLines || !IS_ONLINE || !myRole || !window._db) return;
+  const opRole = myRole === 'player1' ? 'player2' : 'player1';
+  window._push(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/attackQueue`), attackLines);
+}
+
+function watchAttackQueue() {
+  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/attackQueue`), snap => {
+    const queue = snap.val();
+    if (!queue || gameOver) return;
+    const total = Object.values(queue).reduce((sum, n) => sum + n, 0);
+    if (total > 0) { addGarbageLines(total); draw(); }
+    window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/attackQueue`), null);
+  });
+}
+
+// ---- ガベージライン ----
+function addGarbageLines(count) {
+  board.splice(0, count);
+  for (let i = 0; i < count; i++) {
+    const hole = Math.floor(Math.random() * COLS);
+    const row  = new Array(COLS).fill(8);
+    row[hole]  = 0;
+    board.push(row);
+  }
+}
+
+// ---- 相手盤面・スコア監視 ----
+function drawOpponentBoard(opBoard) {
+  if (!opCtx) return;
+  opCtx.clearRect(0, 0, opCanvas.width, opCanvas.height);
+  opCtx.strokeStyle = 'rgba(255,255,255,0.04)'; opCtx.lineWidth = 1;
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      opCtx.strokeRect(c * OP_CELL, r * OP_CELL, OP_CELL, OP_CELL);
+  opBoard.forEach((row, r) => {
+    row.forEach((val, c) => {
+      if (!val) return;
+      opCtx.fillStyle = COLORS[val] || '#888';
+      opCtx.fillRect(c * OP_CELL + 1, r * OP_CELL + 1, OP_CELL - 2, OP_CELL - 2);
+      opCtx.fillStyle = 'rgba(255,255,255,0.2)';
+      opCtx.fillRect(c * OP_CELL + 1, r * OP_CELL + 1, OP_CELL - 2, 3);
+    });
+  });
+}
+
+function listenOpponentBoard() {
+  opUnsubs.forEach(fn => fn()); opUnsubs = [];
+  const opRole = myRole === 'player1' ? 'player2' : 'player1';
+  const unsubBoard = window._onValue(
+    window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/board`),
+    snap => { if (snap.val()) drawOpponentBoard(snap.val()); }
+  );
+  const unsubScore = window._onValue(
+    window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/score`),
+    snap => {
+      const s = snap.val();
+      if (s !== null) {
+        const el = document.getElementById('opponent-score-display');
+        if (el) el.textContent = Number(s).toLocaleString();
+        const el2 = document.getElementById('opponent-score-display2');
+        if (el2) el2.textContent = Number(s).toLocaleString();
+      }
+    }
+  );
+  opUnsubs = [unsubBoard, unsubScore];
+}
+
+// ---- ゲームオーバー・勝利判定 ----
+function handleGameOver() {
+  if (!IS_ONLINE || !myRole || !window._db) return;
+  window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/isGameOver`), true);
+  window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+}
+
+function watchOpponentGameOver() {
+  const opRole = myRole === 'player1' ? 'player2' : 'player1';
+  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/isGameOver`), snap => {
+    if (snap.val() === true && !gameOver) {
+      currentWins++;
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/wins`), currentWins);
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'result');
+    }
+  });
+}
+
+// ---- リザルト ----
+function showOnlineResultFromDB() {
+  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
+    const data = snap.val();
+    if (!data) return;
+    const p1Wins  = data.player1?.wins ?? 0;
+    const p2Wins  = data.player2?.wins ?? 0;
+    const maxWins = data.config?.maxWins ?? 3;
+    const p1Name  = data.player1?.name ?? 'Player1';
+    const p2Name  = data.player2?.name ?? 'Player2';
+    const myWins  = myRole === 'player1' ? p1Wins : p2Wins;
+    const winsText = `${p1Name} ${p1Wins}勝 ー ${p2Name} ${p2Wins}勝`;
+    stopBGM();
+    if (p1Wins >= maxWins || p2Wins >= maxWins) {
+      showOnlineResult(myWins >= maxWins ? 'YOU WIN!' : 'YOU LOSE', 'マッチ終了', false, winsText);
+    } else {
+      showOnlineResult(!gameOver ? 'ROUND WIN' : 'ROUND LOSE', '次のラウンドへ', true, winsText);
+    }
+  }, { onlyOnce: true });
+}
+
+function showOnlineResult(title, msg, showRematch, winsText) {
+  cancelAnimationFrame(animId);
+  document.getElementById('gameover-anim').classList.add('hidden');
+  document.getElementById('online-result-title').textContent = title;
+  document.getElementById('online-result-msg').textContent   = msg;
+  document.getElementById('online-result-wins').textContent  = winsText || '';
+  document.getElementById('online-rematch-btn').classList.toggle('hidden', !showRematch);
+  document.getElementById('online-result').classList.remove('hidden');
+}
+
+// ---- 再戦 ----
+function rematch() {
+  document.getElementById('online-result').classList.add('hidden');
+  opUnsubs.forEach(fn => fn()); opUnsubs = [];
+  if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
+  const resetData = { board: null, score: 0, isGameOver: false, ready: false, attackQueue: null };
+  window._update(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`), resetData);
+  if (myRole === 'player1') {
+    window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'waiting');
+  }
+  showPage('waiting');
+  initWaitingScreen();
+  watchBothReady();
+}
+
+document.getElementById('online-rematch-btn').addEventListener('click', rematch);
+document.getElementById('online-result-home-btn').addEventListener('click', () => {
+  document.getElementById('online-result').classList.add('hidden');
+  cleanupRoom(); goToTitle();
+});
+
+// ---- ルームクリーンアップ ----
+function cleanupRoom() {
+  opUnsubs.forEach(fn => fn()); opUnsubs = [];
+  if (gameStateUnsub) { gameStateUnsub(); gameStateUnsub = null; }
+  if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
+  if (IS_ONLINE && myRole && window._db) {
+    window._remove(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`));
+  }
+}
+
+// ---- ルームID入力ボタン ----
+document.getElementById('room-join-btn').addEventListener('click', () => {
+  const roomId   = document.getElementById('room-input').value.trim();
+  const nickname = document.getElementById('nickname-input').value.trim() || 'Player';
+  if (!roomId) {
+    document.getElementById('online-status').textContent = 'ルームIDを入力してください';
+    return;
+  }
+  sessionStorage.setItem('tetris_nickname', nickname);
+  const url = new URL(location.href);
+  url.searchParams.set('room', roomId);
+  url.searchParams.set('nick', nickname);
+  location.href = url.toString();
+});
+
+// URLにroom=IDがある場合はFirebase準備完了後に自動joinRoom
+if (IS_ONLINE) {
+  const nickFromUrl = urlParams.get('nick') || sessionStorage.getItem('tetris_nickname') || 'Player';
+  myNickname = nickFromUrl;
+  sessionStorage.setItem('tetris_nickname', nickFromUrl);
+  if (window._firebaseReady) joinRoom(myNickname);
+  else window.addEventListener('firebase-ready', () => joinRoom(myNickname));
+}
+// ====== /オンライン対戦 ======
+</script>
+
+<!-- チュートリアルPlayer（インライン） -->
+<script>
+(function () {
+  'use strict';
+
+  var config = null;
+  var currentIndex = 0;
+  var tooltipEl = null;
+  var styleEl = null;
+  var overlayEls = [];
+  var stepListeners = [];
+  var skipTimer = null;
+  var currentTargetEl = null;
+
+  // ----------------------------------------------------------------
+  // Styles
+  // ----------------------------------------------------------------
+  function injectStyles() {
+    styleEl = document.createElement('style');
+    styleEl.setAttribute('data-tp', '1');
+    styleEl.textContent = [
+      '.tp-tooltip {',
+      '  position: fixed;',
+      '  z-index: 99999;',
+      '  width: 320px;',
+      '  background: #fff;',
+      '  border-radius: 12px;',
+      '  box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);',
+      '  padding: 0;',
+      '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+      '  font-size: 14px;',
+      '  color: #1a1a1a;',
+      '  opacity: 1;',
+      '  transition: opacity 200ms ease;',
+      '  pointer-events: all;',
+      '}',
+      '.tp-tooltip.tp-fade-out { opacity: 0 !important; transition: opacity 150ms ease; }',
+      '.tp-header {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '  padding: 14px 14px 10px;',
+      '  border-bottom: 1px solid #f0f0f0;',
+      '}',
+      '.tp-avatar {',
+      '  width: 28px;',
+      '  height: 28px;',
+      '  border-radius: 50%;',
+      '  background: #3b82f6;',
+      '  flex-shrink: 0;',
+      '  display: flex;',
+      '  align-items: center;',
+      '  justify-content: center;',
+      '  color: #fff;',
+      '  font-size: 13px;',
+      '  font-weight: 700;',
+      '}',
+      '.tp-title {',
+      '  flex: 1;',
+      '  font-weight: 600;',
+      '  font-size: 13px;',
+      '  color: #374151;',
+      '  overflow: hidden;',
+      '  text-overflow: ellipsis;',
+      '  white-space: nowrap;',
+      '}',
+      '.tp-close {',
+      '  background: none;',
+      '  border: none;',
+      '  cursor: pointer;',
+      '  color: #9ca3af;',
+      '  font-size: 16px;',
+      '  padding: 0 2px;',
+      '  line-height: 1;',
+      '  flex-shrink: 0;',
+      '}',
+      '.tp-close:hover { color: #374151; }',
+      '.tp-body {',
+      '  padding: 14px 16px;',
+      '  line-height: 1.6;',
+      '  color: #374151;',
+      '  font-size: 14px;',
+      '}',
+      '.tp-footer {',
+      '  padding: 10px 16px 14px;',
+      '  border-top: 1px solid #f0f0f0;',
+      '  display: flex;',
+      '  flex-direction: column;',
+      '  gap: 8px;',
+      '}',
+      '.tp-progress-row {',
+      '  display: flex;',
+      '  align-items: center;',
+      '  gap: 8px;',
+      '}',
+      '.tp-progress-text {',
+      '  font-size: 12px;',
+      '  color: #9ca3af;',
+      '  white-space: nowrap;',
+      '}',
+      '.tp-progress-bar {',
+      '  flex: 1;',
+      '  height: 4px;',
+      '  background: #e5e7eb;',
+      '  border-radius: 2px;',
+      '  overflow: hidden;',
+      '}',
+      '.tp-progress-fill {',
+      '  height: 100%;',
+      '  background: #3b82f6;',
+      '  border-radius: 2px;',
+      '  transition: width 200ms ease;',
+      '}',
+      '.tp-actions { display: flex; justify-content: flex-end; }',
+      '.tp-next {',
+      '  background: #3b82f6;',
+      '  color: #fff;',
+      '  border: none;',
+      '  border-radius: 6px;',
+      '  padding: 7px 18px;',
+      '  font-size: 13px;',
+      '  font-weight: 600;',
+      '  cursor: pointer;',
+      '}',
+      '.tp-next:hover { background: #2563eb; }',
+      '.tp-skip {',
+      '  background: none;',
+      '  color: #6b7280;',
+      '  border: 1px solid #d1d5db;',
+      '  border-radius: 6px;',
+      '  padding: 7px 18px;',
+      '  font-size: 13px;',
+      '  font-weight: 500;',
+      '  cursor: pointer;',
+      '}',
+      '.tp-skip:hover { background: #f3f4f6; }',
+      '.tp-hint {',
+      '  font-size: 12px;',
+      '  color: #6b7280;',
+      '  text-align: right;',
+      '}',
+      '.tp-overlay-piece {',
+      '  position: fixed;',
+      '  background: rgba(0,0,0,0.5);',
+      '  z-index: 99998;',
+      '  pointer-events: none;',
+      '}',
+      '.tp-highlighted {',
+      '  outline: 2px solid #3b82f6 !important;',
+      '  outline-offset: 2px !important;',
+      '  position: relative;',
+      '}',
+      '@media (max-width: 480px) {',
+      '  .tp-tooltip {',
+      '    width: calc(100vw - 24px);',
+      '    left: 12px !important;',
+      '    right: 12px !important;',
+      '    bottom: 16px !important;',
+      '    top: auto !important;',
+      '    transform: none !important;',
+      '  }',
+      '}'
+    ].join('\n');
+    document.head.appendChild(styleEl);
+  }
+
+  // ----------------------------------------------------------------
+  // Overlay (4-piece spotlight)
+  // ----------------------------------------------------------------
+  function showOverlay(el) {
+    hideOverlay();
+    var rect = el.getBoundingClientRect();
+    var pad = 6;
+    var top = rect.top - pad;
+    var left = rect.left - pad;
+    var right = rect.right + pad;
+    var bottom = rect.bottom + pad;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+
+    var pieces = [
+      { top: 0, left: 0, width: vw, height: Math.max(0, top) },
+      { top: Math.min(vh, bottom), left: 0, width: vw, height: Math.max(0, vh - bottom) },
+      { top: Math.max(0, top), left: 0, width: Math.max(0, left), height: Math.max(0, bottom - top) },
+      { top: Math.max(0, top), left: Math.min(vw, right), width: Math.max(0, vw - right), height: Math.max(0, bottom - top) }
+    ];
+
+    pieces.forEach(function (p) {
+      var div = document.createElement('div');
+      div.className = 'tp-overlay-piece';
+      div.style.top = p.top + 'px';
+      div.style.left = p.left + 'px';
+      div.style.width = p.width + 'px';
+      div.style.height = p.height + 'px';
+      document.body.appendChild(div);
+      overlayEls.push(div);
+    });
+
+    el.classList.add('tp-highlighted');
+    currentTargetEl = el;
+  }
+
+  function hideOverlay() {
+    overlayEls.forEach(function (el) { el.parentNode && el.parentNode.removeChild(el); });
+    overlayEls = [];
+    if (currentTargetEl) {
+      currentTargetEl.classList.remove('tp-highlighted');
+      currentTargetEl = null;
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Tooltip DOM
+  // ----------------------------------------------------------------
+  function buildUI() {
+    tooltipEl = document.createElement('div');
+    tooltipEl.className = 'tp-tooltip';
+    tooltipEl.style.opacity = '0';
+    document.body.appendChild(tooltipEl);
+  }
+
+  function renderStep(step, index) {
+    var total = config.steps.length;
+    var pct = Math.round(((index + 1) / total) * 100);
+    var isWait = step.type === 'wait-click' || step.type === 'wait-input';
+
+    var actionsHtml = isWait
+      ? '<span class="tp-hint" id="tp-hint-text">' + getHintText(step.type) + '</span>'
+      : '<button class="tp-next" id="tp-next-btn">次へ</button>';
+
+    tooltipEl.innerHTML =
+      '<div class="tp-header">' +
+        '<span class="tp-avatar">G</span>' +
+        '<span class="tp-title">' + escapeHtml(config.name || 'ガイド') + '</span>' +
+        '<button class="tp-close" id="tp-close-btn">✕</button>' +
+      '</div>' +
+      '<div class="tp-body">' + escapeHtml(step.message || '') + '</div>' +
+      '<div class="tp-footer">' +
+        '<div class="tp-progress-row">' +
+          '<span class="tp-progress-text">' + (index + 1) + ' / ' + total + '</span>' +
+          '<div class="tp-progress-bar"><div class="tp-progress-fill" style="width:' + pct + '%"></div></div>' +
+        '</div>' +
+        '<div class="tp-actions">' + actionsHtml + '</div>' +
+      '</div>';
+
+    document.getElementById('tp-close-btn').addEventListener('click', cleanup);
+    var nextBtn = document.getElementById('tp-next-btn');
+    if (nextBtn) nextBtn.addEventListener('click', function () { nextStep(); });
+  }
+
+  function getHintText(type) {
+    return type === 'wait-click' ? 'クリックして進んでください' : '入力して進んでください（Enterまたはフォーカスを外す）';
+  }
+
+  function showSkipButton() {
+    var actionsEl = tooltipEl && tooltipEl.querySelector('.tp-actions');
+    if (!actionsEl) return;
+    actionsEl.innerHTML = '<button class="tp-skip" id="tp-skip-btn">スキップ</button>';
+    document.getElementById('tp-skip-btn').addEventListener('click', function () {
+      detachStepListeners();
+      clearSkipTimer();
+      nextStep();
+    });
+  }
+
+  // ----------------------------------------------------------------
+  // Positioning
+  // ----------------------------------------------------------------
+  function positionTooltip(el) {
+    if (!tooltipEl) return;
+
+    if (window.innerWidth <= 480) {
+      tooltipEl.style.bottom = '16px';
+      tooltipEl.style.left = '12px';
+      tooltipEl.style.top = 'auto';
+      tooltipEl.style.right = '12px';
+      tooltipEl.style.transform = 'none';
+      return;
+    }
+
+    var rect = el.getBoundingClientRect();
+    var tw = 320;
+    var th = tooltipEl.offsetHeight || 160;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var gap = 12;
+
+    var positions = [
+      { top: rect.bottom + gap, left: rect.left + rect.width / 2 - tw / 2 },
+      { top: rect.top - th - gap, left: rect.left + rect.width / 2 - tw / 2 },
+      { top: rect.top + rect.height / 2 - th / 2, left: rect.right + gap },
+      { top: rect.top + rect.height / 2 - th / 2, left: rect.left - tw - gap }
+    ];
+
+    var chosen = positions[0];
+    for (var i = 0; i < positions.length; i++) {
+      var p = positions[i];
+      if (p.top >= 0 && p.top + th <= vh && p.left >= 0 && p.left + tw <= vw) {
+        chosen = p;
+        break;
+      }
+    }
+
+    chosen.left = Math.max(8, Math.min(vw - tw - 8, chosen.left));
+    chosen.top = Math.max(8, Math.min(vh - th - 8, chosen.top));
+
+    tooltipEl.style.top = chosen.top + 'px';
+    tooltipEl.style.left = chosen.left + 'px';
+    tooltipEl.style.bottom = 'auto';
+    tooltipEl.style.right = 'auto';
+    tooltipEl.style.transform = 'none';
+  }
+
+  function positionCenter() {
+    if (!tooltipEl) return;
+    tooltipEl.style.bottom = '32px';
+    tooltipEl.style.left = '50%';
+    tooltipEl.style.top = 'auto';
+    tooltipEl.style.right = 'auto';
+    tooltipEl.style.transform = 'translateX(-50%)';
+  }
+
+  // ----------------------------------------------------------------
+  // Step listeners
+  // ----------------------------------------------------------------
+  function attachStepListeners(step, el) {
+    if (step.type === 'wait-click') {
+      var handler = function () {
+        detachStepListeners();
+        clearSkipTimer();
+        nextStep();
+      };
+      el.addEventListener('click', handler);
+      stepListeners.push({ el: el, type: 'click', handler: handler });
+    } else if (step.type === 'wait-input') {
+      var blurHandler = function () {
+        detachStepListeners();
+        clearSkipTimer();
+        nextStep();
+      };
+      var keyHandler = function (e) {
+        if (e.key === 'Enter') {
+          detachStepListeners();
+          clearSkipTimer();
+          nextStep();
+        }
+      };
+      el.addEventListener('blur', blurHandler);
+      el.addEventListener('keydown', keyHandler);
+      stepListeners.push({ el: el, type: 'blur', handler: blurHandler });
+      stepListeners.push({ el: el, type: 'keydown', handler: keyHandler });
+    }
+  }
+
+  function detachStepListeners() {
+    stepListeners.forEach(function (l) {
+      l.el.removeEventListener(l.type, l.handler);
+    });
+    stepListeners = [];
+  }
+
+  // ----------------------------------------------------------------
+  // Skip timer
+  // ----------------------------------------------------------------
+  function startSkipTimer() {
+    clearSkipTimer();
+    skipTimer = setTimeout(function () {
+      showSkipButton();
+    }, 5000);
+  }
+
+  function clearSkipTimer() {
+    if (skipTimer !== null) {
+      clearTimeout(skipTimer);
+      skipTimer = null;
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Fade helpers
+  // ----------------------------------------------------------------
+  function fadeIn() {
+    if (!tooltipEl) return;
+    tooltipEl.style.opacity = '0';
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        if (tooltipEl) tooltipEl.style.opacity = '1';
+      });
+    });
+  }
+
+  function fadeOut(cb) {
+    if (!tooltipEl) { cb && cb(); return; }
+    tooltipEl.classList.add('tp-fade-out');
+    setTimeout(function () {
+      tooltipEl && tooltipEl.classList.remove('tp-fade-out');
+      cb && cb();
+    }, 150);
+  }
+
+  // ----------------------------------------------------------------
+  // Core
+  // ----------------------------------------------------------------
+  function showStep(index) {
+    detachStepListeners();
+    clearSkipTimer();
+    hideOverlay();
+
+    if (index >= config.steps.length) {
+      cleanup();
+      return;
+    }
+
+    var step = config.steps[index];
+    currentIndex = index;
+
+    var el = null;
+    if (step.selector) {
+      el = document.querySelector(step.selector);
+      if (!el) {
+        console.warn('[TutorialPlayer] selector not found: ' + step.selector + ' — skipping step ' + index);
+        showStep(index + 1);
+        return;
+      }
+    }
+
+    function render() {
+      renderStep(step, index);
+
+      if (el) {
+        scrollToElement(el);
+        showOverlay(el);
+        setTimeout(function () { positionTooltip(el); }, 80);
+      } else {
+        positionCenter();
+      }
+
+      if (step.type === 'wait-click' || step.type === 'wait-input') {
+        attachStepListeners(step, el);
+        startSkipTimer();
+      }
+
+      fadeIn();
+    }
+
+    if (tooltipEl.style.opacity !== '0' && parseFloat(tooltipEl.style.opacity) > 0) {
+      fadeOut(render);
+    } else {
+      render();
+    }
+  }
+
+  function nextStep() {
+    showStep(currentIndex + 1);
+  }
+
+  function scrollToElement(el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  // ----------------------------------------------------------------
+  // Cleanup
+  // ----------------------------------------------------------------
+  function cleanup() {
+    detachStepListeners();
+    clearSkipTimer();
+    hideOverlay();
+
+    if (tooltipEl && tooltipEl.parentNode) {
+      tooltipEl.parentNode.removeChild(tooltipEl);
+    }
+    tooltipEl = null;
+
+    if (styleEl && styleEl.parentNode) {
+      styleEl.parentNode.removeChild(styleEl);
+    }
+    styleEl = null;
+
+    config = null;
+    currentIndex = 0;
+    stepListeners = [];
+    overlayEls = [];
+    skipTimer = null;
+    currentTargetEl = null;
+  }
+
+  // ----------------------------------------------------------------
+  // Utilities
+  // ----------------------------------------------------------------
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ----------------------------------------------------------------
+  // Public API
+  // ----------------------------------------------------------------
+  function init(cfg) {
+    if (!cfg || !Array.isArray(cfg.steps) || cfg.steps.length === 0) {
+      console.warn('[TutorialPlayer] invalid config');
+      return;
+    }
+    if (config) cleanup();
+
+    config = cfg;
+    currentIndex = 0;
+
+    injectStyles();
+    buildUI();
+    showStep(0);
+  }
+
+  window.TutorialPlayer = { init: init };
+}());
+</script>
+
+</body>
+</html>

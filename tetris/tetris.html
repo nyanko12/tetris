@@ -53,7 +53,8 @@
     </div>
     <div id="title-controls">
       <span>←→</span> 移動 &nbsp;
-      <span>↑</span> 回転 &nbsp;
+      <span>↑</span> 右回転 &nbsp;
+      <span>Z</span> 左回転 &nbsp;
       <span>↓</span> 低速落下<br>
       <span>Space</span> 即落下 &nbsp;
       <span>C</span> ホールド &nbsp;
@@ -103,6 +104,7 @@
 
 <!-- ゲーム画面 -->
 <div id="game-screen" class="page hidden">
+  <canvas id="fire-canvas"></canvas>
   <div id="game-container">
     <div id="left-col">
       <div class="panel-box" id="hold-panel">
@@ -130,7 +132,8 @@
       </div>
       <div class="panel-box controls">
         <span>←→</span> 移動<br>
-        <span>↑</span> 回転<br>
+        <span>↑</span> 右回転<br>
+        <span>Z</span> 左回転<br>
         <span>↓</span> 低速落下<br>
         <span>Space</span> 即落下<br>
         <span>C</span> ホールド<br>
@@ -185,13 +188,13 @@
         <span class="diff-name">EASY</span>
         <span class="diff-desc">Level 1スタート</span>
       </button>
-      <button class="diff-btn" data-level="3">
+      <button class="diff-btn" data-level="4">
         <span class="diff-name">NORMAL</span>
-        <span class="diff-desc">Level 3スタート</span>
+        <span class="diff-desc">Level 4スタート</span>
       </button>
-      <button class="diff-btn" data-level="5">
+      <button class="diff-btn" data-level="7">
         <span class="diff-name">HARD</span>
-        <span class="diff-desc">Level 5スタート</span>
+        <span class="diff-desc">Level 7スタート</span>
       </button>
     </div>
     <button id="diff-back-btn">← 戻る</button>
@@ -231,22 +234,24 @@ const COLORS = [
 // ====== キー設定 ======
 const KB_STORAGE_KEY = 'tetris_keybinds';
 const KB_DEFAULT = {
-  left:      'ArrowLeft',
-  right:     'ArrowRight',
-  down:      'ArrowDown',
-  rotate:    'ArrowUp',
-  hardDrop:  'Space',
-  hold:      'KeyC',
-  pause:     'KeyP',
+  left:       'ArrowLeft',
+  right:      'ArrowRight',
+  down:       'ArrowDown',
+  rotateCW:   'ArrowUp',
+  rotateCCW:  'KeyZ',
+  hardDrop:   'Space',
+  hold:       'KeyC',
+  pause:      'KeyP',
 };
 const KB_LABELS = {
-  left:     '左移動',
-  right:    '右移動',
-  down:     '低速落下',
-  rotate:   '回転',
-  hardDrop: '即落下',
-  hold:     'ホールド',
-  pause:    '一時停止',
+  left:      '左移動',
+  right:     '右移動',
+  down:      '低速落下',
+  rotateCW:  '右回転',
+  rotateCCW: '左回転',
+  hardDrop:  '即落下',
+  hold:      'ホールド',
+  pause:     '一時停止',
 };
 
 function loadKeybinds() {
@@ -547,6 +552,7 @@ function createPiece(type) {
     shape: SHAPES[type].map(r => [...r]),
     x: Math.floor(COLS / 2) - Math.floor(SHAPES[type][0].length / 2),
     y: 0,
+    rotState: 0,
   };
 }
 
@@ -554,7 +560,7 @@ function randomType() {
   return Math.floor(Math.random() * 7) + 1;
 }
 
-function rotate(shape) {
+function rotateCW(shape) {
   const rows = shape.length, cols = shape[0].length;
   const result = Array.from({length: cols}, () => new Array(rows).fill(0));
   for (let r = 0; r < rows; r++)
@@ -562,6 +568,61 @@ function rotate(shape) {
       result[c][rows - 1 - r] = shape[r][c];
   return result;
 }
+
+function rotateCCW(shape) {
+  const rows = shape.length, cols = shape[0].length;
+  const result = Array.from({length: cols}, () => new Array(rows).fill(0));
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      result[cols - 1 - c][r] = shape[r][c];
+  return result;
+}
+
+// ===== SRS Wall Kick Tables =====
+// オフセット: [dx, dy]  dy+ = 下方向（ゲーム座標系）
+const SRS_KICKS_JLSTZ = {
+  '0-1': [ [0,0], [-1,0], [-1,-1], [0, 2], [-1, 2] ],
+  '1-0': [ [0,0], [ 1,0], [ 1, 1], [0,-2], [ 1,-2] ],
+  '1-2': [ [0,0], [ 1,0], [ 1, 1], [0,-2], [ 1,-2] ],
+  '2-1': [ [0,0], [-1,0], [-1,-1], [0, 2], [-1, 2] ],
+  '2-3': [ [0,0], [ 1,0], [ 1,-1], [0, 2], [ 1, 2] ],
+  '3-2': [ [0,0], [-1,0], [-1, 1], [0,-2], [-1,-2] ],
+  '3-0': [ [0,0], [-1,0], [-1, 1], [0,-2], [-1,-2] ],
+  '0-3': [ [0,0], [ 1,0], [ 1,-1], [0, 2], [ 1, 2] ],
+};
+const SRS_KICKS_I = {
+  '0-1': [ [0,0], [-2,0], [ 1,0], [-2, 1], [ 1,-2] ],
+  '1-0': [ [0,0], [ 2,0], [-1,0], [ 2,-1], [-1, 2] ],
+  '1-2': [ [0,0], [-1,0], [ 2,0], [-1,-2], [ 2, 1] ],
+  '2-1': [ [0,0], [ 1,0], [-2,0], [ 1, 2], [-2,-1] ],
+  '2-3': [ [0,0], [ 2,0], [-1,0], [ 2,-1], [-1, 2] ],
+  '3-2': [ [0,0], [-2,0], [ 1,0], [-2, 1], [ 1,-2] ],
+  '3-0': [ [0,0], [ 1,0], [-2,0], [ 1, 2], [-2,-1] ],
+  '0-3': [ [0,0], [-1,0], [ 2,0], [-1,-2], [ 2, 1] ],
+};
+
+function getSRSKicks(type, from, to) {
+  if (type === 2) return [[0, 0]]; // O ピースはキックなし
+  const table = type === 1 ? SRS_KICKS_I : SRS_KICKS_JLSTZ;
+  return table[`${from}-${to}`] || [[0, 0]];
+}
+
+function tryRotate(isCW) {
+  const newState = (current.rotState + (isCW ? 1 : 3)) % 4;
+  const rotated = isCW ? rotateCW(current.shape) : rotateCCW(current.shape);
+  const kicks = getSRSKicks(current.type, current.rotState, newState);
+  for (const [dx, dy] of kicks) {
+    if (!collide(current, board, dx, dy, rotated)) {
+      current.shape = rotated;
+      current.x += dx;
+      current.y += dy;
+      current.rotState = newState;
+      playRotateSound();
+      return;
+    }
+  }
+}
+// ===== /SRS =====
 
 function collide(piece, board, dx=0, dy=0, shape=piece.shape) {
   for (let r = 0; r < shape.length; r++) {
@@ -600,7 +661,7 @@ function clearLines() {
     const pts = [0, 100, 300, 500, 800];
     score += (pts[cleared] || 800) * level;
     lines += cleared;
-    level = Math.floor(lines / 10) + 1;
+    level = Math.min(10, lastLevel + Math.floor(lines / 10));
     dropInterval = Math.max(100, 500 - (level - 1) * 40);
     updateUI();
     // ★ オンライン: スコア送信 + 攻撃キュー送信
@@ -668,10 +729,112 @@ function lockPiece() {
   }
 }
 
+// ===== 炎エフェクト =====
+const fireParticles = [];
+let fireAnimId = null;
+let fireParams = null;
+
+function getFireParams(lv) {
+  const t = (lv - 1) / 9; // 0..1
+  return {
+    spawnCount : Math.round(1 + t * 14),       // 1..15粒/フレーム
+    maxHeight  : 0.15 + t * 0.85,              // 画面下から何割まで上昇するか
+    hueBase    : t * 55,                        // 0(赤)..55(黄)
+    speedMul   : 1 + t * 2.5,                  // 上昇速度倍率
+    maxSize    : 6 + t * 22,                   // パーティクル最大サイズ
+    opacity    : 0.3 + t * 0.7,               // キャンバス全体の透明度
+  };
+}
+
+function spawnFireParticle(canvas, p) {
+  const x = Math.random() * canvas.width;
+  const y = canvas.height;
+  const maxLife = 40 + Math.random() * 40;
+  fireParticles.push({
+    x, y,
+    vx: (Math.random() - 0.5) * 1.5,
+    vy: -(1.5 + Math.random() * 2) * p.speedMul,
+    size: (3 + Math.random() * p.maxSize) * 0.5,
+    maxSize: 3 + Math.random() * p.maxSize,
+    hue: p.hueBase + Math.random() * 15,
+    life: maxLife,
+    maxLife,
+    maxHeight: p.maxHeight,
+  });
+}
+
+function fireLoop() {
+  if (paused || gameOver) { fireAnimId = requestAnimationFrame(fireLoop); return; }
+  const canvas = document.getElementById('fire-canvas');
+  if (!canvas || !fireParams) { fireAnimId = null; return; }
+  canvas.width  = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // 新規粒子を生成
+  for (let i = 0; i < fireParams.spawnCount; i++) {
+    spawnFireParticle(canvas, fireParams);
+  }
+
+  const limitY = canvas.height * (1 - fireParams.maxHeight);
+
+  for (let i = fireParticles.length - 1; i >= 0; i--) {
+    const p = fireParticles[i];
+    p.x += p.vx + (Math.random() - 0.5) * 0.8;
+    p.y += p.vy;
+    p.life--;
+
+    if (p.life <= 0 || p.y < limitY) {
+      fireParticles.splice(i, 1);
+      continue;
+    }
+
+    const progress = 1 - p.life / p.maxLife; // 0..1 (誕生→消滅)
+    const alpha = Math.sin(Math.PI * (1 - progress)) * 0.85;
+    const size  = p.maxSize * Math.sin(Math.PI * (1 - progress * 0.6));
+    // 高温ほど白に近づける
+    const lightness = 50 + progress * 35;
+
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, Math.max(1, size), 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${p.hue}, 100%, ${lightness}%, ${alpha})`;
+    ctx.fill();
+  }
+
+  fireAnimId = requestAnimationFrame(fireLoop);
+}
+
+function startFireEffect() {
+  if (fireAnimId) cancelAnimationFrame(fireAnimId);
+  fireParticles.length = 0;
+  fireAnimId = requestAnimationFrame(fireLoop);
+}
+
+function stopFireEffect() {
+  if (fireAnimId) { cancelAnimationFrame(fireAnimId); fireAnimId = null; }
+  fireParticles.length = 0;
+  const canvas = document.getElementById('fire-canvas');
+  if (canvas) {
+    canvas.style.opacity = '0';
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+}
+
+function updateFireLevel(lv) {
+  fireParams = getFireParams(lv);
+  const canvas = document.getElementById('fire-canvas');
+  if (canvas) canvas.style.opacity = fireParams.opacity;
+}
+// ===== 炎エフェクトここまで =====
+
 function updateUI() {
   document.getElementById('score-display').textContent = score;
   document.getElementById('level-display').textContent = level;
   document.getElementById('lines-display').textContent = lines;
+  updateFireLevel(level);
+  bgmSpeed = 1.0 + (level - 1) / 9 * 0.7; // Lv1=1.0x → Lv10=1.7x
 }
 
 function drawCell(context, x, y, type, size=CELL) {
@@ -808,6 +971,7 @@ function gameLoop(timestamp) {
 let gameOverAnimId = null;
 
 function startGameOverAnim() {
+  stopFireEffect();
   cancelAnimationFrame(gameOverAnimId);
   const animDiv = document.getElementById('gameover-anim');
   animDiv.innerHTML = '';
@@ -885,10 +1049,12 @@ function startGame(initialLevel = 1) {
   gameOverSE.currentTime = 0;
   cancelAnimationFrame(gameOverAnimId);
   document.getElementById('gameover-anim').classList.add('hidden');
+  bgmSpeed = 1.0 + (initialLevel - 1) / 9 * 0.7;
   cancelAnimationFrame(animId);
   animId = requestAnimationFrame(gameLoop);
-  if (!bgmPlaying) startBGM(MELODY_GAME);
-  else if (activeMelody !== MELODY_GAME) startBGM(MELODY_GAME);
+  startFireEffect();
+  if (!bgmPlaying) startBGM(MELODY_TITLE);
+  else if (activeMelody !== MELODY_TITLE) startBGM(MELODY_TITLE);
   // 相手フィールド: オンライン時のみ表示
   document.getElementById('opponent-col').classList.toggle('hidden', !IS_ONLINE);
 }
@@ -1006,15 +1172,18 @@ function scheduleNote(freq, start, dur) {
 }
 
 let activeMelody = MELODY_TITLE;
+let bgmSpeed = 1.0;
 
 function scheduleBGMLoop(startTime) {
   if (!bgmPlaying) return;
   const melody = activeMelody;
-  const totalDur = melody.reduce((s,[,d])=>s+d, 0);
+  const speed = bgmSpeed;
+  const totalDur = melody.reduce((s,[,d])=>s+d/speed, 0);
   let t = startTime;
   for (const [note, dur] of melody) {
-    if (NOTE_FREQ[note]) scheduleNote(NOTE_FREQ[note], t, dur * 0.92);
-    t += dur;
+    const d = dur / speed;
+    if (NOTE_FREQ[note]) scheduleNote(NOTE_FREQ[note], t, d * 0.92);
+    t += d;
   }
   const delay = (startTime + totalDur - audioCtx.currentTime - 0.15) * 1000;
   bgmLoopTimeout = setTimeout(() => scheduleBGMLoop(startTime + totalDur), Math.max(0, delay));
@@ -1229,6 +1398,7 @@ function goToTitle() {
   gameOverSE.currentTime = 0;
   cancelAnimationFrame(gameOverAnimId);
   document.getElementById('gameover-anim').classList.add('hidden');
+  stopFireEffect();
   renderHighScores();
   showPage('title');
   startBGM(MELODY_TITLE);
@@ -1371,16 +1541,9 @@ document.addEventListener('keydown', e => {
   } else if (code === keybinds.down) {
     e.preventDefault();
     if (!collide(current, board, 0, 1)) { current.y++; dropCounter = 0; }
-  } else if (code === keybinds.rotate) {
+  } else if (code === keybinds.rotateCW || code === keybinds.rotateCCW) {
     e.preventDefault();
-    const rotated = rotate(current.shape);
-    if (!collide(current, board, 0, 0, rotated)) {
-      current.shape = rotated; playRotateSound();
-    } else if (!collide(current, board, 1, 0, rotated)) {
-      current.shape = rotated; current.x++; playRotateSound();
-    } else if (!collide(current, board, -1, 0, rotated)) {
-      current.shape = rotated; current.x--; playRotateSound();
-    }
+    tryRotate(code === keybinds.rotateCW);
   } else if (code === keybinds.hardDrop) {
     e.preventDefault();
     hardDrop();

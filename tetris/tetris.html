@@ -46,10 +46,13 @@
     <!-- オンライン対戦 -->
     <div id="room-box">
       <input id="nickname-input" type="text" placeholder="ニックネーム（例: Player1）" maxlength="16">
-      <input id="room-input" type="text" placeholder="ルームID（例: abc123）" maxlength="20">
-      <button id="room-join-btn">対戦を始める</button>
       <p id="online-status"></p>
-      <p id="room-hint">同じIDを相手と共有してください</p>
+      <button id="room-create-btn">部屋を作る</button>
+      <div class="room-divider">── または ──</div>
+      <div id="room-join-section">
+        <input id="room-input" type="text" placeholder="ルームID（例: abc123）" maxlength="20">
+        <button id="room-join-btn">部屋に参加する</button>
+      </div>
     </div>
     <div id="title-controls">
       <span>←→</span> 移動 &nbsp;
@@ -83,6 +86,18 @@
     <div id="waiting-wins">
       <span id="wins-p1">0</span> 勝 ー <span id="wins-p2">0</span> 勝
     </div>
+    <div id="match-settings">
+      <div id="match-mode-btns">
+        <button class="mode-btn active" id="mode-btn-wins" data-mode="wins">先取勝利数</button>
+        <button class="mode-btn" id="mode-btn-rounds" data-mode="rounds">ラウンド数</button>
+      </div>
+      <div id="match-target-row">
+        <button class="target-btn" id="target-minus">－</button>
+        <span id="match-target-num">3</span>
+        <button class="target-btn" id="target-plus">＋</button>
+        <span id="match-target-unit">先取</span>
+      </div>
+    </div>
     <button id="ready-btn" disabled>準備完了</button>
     <p id="waiting-status"></p>
     <button id="waiting-cancel-btn">キャンセル</button>
@@ -95,6 +110,7 @@
     <h2 id="online-result-title"></h2>
     <p id="online-result-msg"></p>
     <div id="online-result-wins"></div>
+    <div id="online-result-rounds"></div>
     <div id="online-result-buttons">
       <button id="online-rematch-btn" class="hidden">再戦</button>
       <button id="online-result-home-btn">タイトルへ</button>
@@ -413,6 +429,7 @@ const hctx = holdCanvas.getContext('2d');
 const urlParams = new URLSearchParams(location.search);
 const ROOM_ID   = urlParams.get('room');
 const IS_ONLINE = !!ROOM_ID;
+const IS_HOST   = urlParams.get('host') === '1';
 let myRole = null;  // 'player1' or 'player2'
 let opUnsubs = []; // Firebase監視の解除関数
 
@@ -1055,8 +1072,6 @@ function startGame(initialLevel = 1) {
   startFireEffect();
   if (!bgmPlaying) startBGM(MELODY_TITLE);
   else if (activeMelody !== MELODY_TITLE) startBGM(MELODY_TITLE);
-  // 相手フィールド: オンライン時のみ表示
-  document.getElementById('opponent-col').classList.toggle('hidden', !IS_ONLINE);
 }
 
 function showOverlay(title, msg, btnText) {
@@ -1583,6 +1598,14 @@ function makePlayerData(nickname) {
   return { name: nickname || 'Player', uuid: myUUID, ready: false, board: null, score: 0, wins: 0, isGameOver: false };
 }
 
+// ---- ランダムルームID生成 ----
+function generateRoomId() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let id = '';
+  for (let i = 0; i < 6; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return id;
+}
+
 // ---- 入室処理（onValue 一回読み + set） ----
 function joinRoom(nickname) {
   if (!window._db) {
@@ -1598,24 +1621,33 @@ function joinRoom(nickname) {
     const data = snap.val();
 
     // --- 再接続チェック ---
-    if (data && data.player1 && data.player1.uuid === myUUID) {
+    if (data?.player1?.uuid === myUUID) {
       myRole = 'player1';
-    } else if (data && data.player2 && data.player2.uuid === myUUID) {
+    } else if (data?.player2?.uuid === myUUID) {
       myRole = 'player2';
-    } else if (!data || !data.player1 || !data.player1.uuid) {
-      // player1 スロットが空 → player1として入室
+    } else if (IS_HOST) {
+      // 部屋を作る → player1として入室
+      if (data?.player1?.uuid) {
+        if (statusEl) statusEl.textContent = 'このルームIDは既に使用されています';
+        return;
+      }
       myRole = 'player1';
       window._update(window._ref(window._db, `rooms/${ROOM_ID}`), {
-        config:  { maxWins: 3, gameState: 'waiting' },
+        config:  { matchMode: 'wins', matchTarget: 3, gameState: 'waiting' },
         player1: makePlayerData(nickname),
       });
-    } else if (!data.player2 || !data.player2.uuid) {
-      // player2 スロットが空 → player2として入室
+    } else {
+      // 部屋に参加する → player2として入室
+      if (!data?.player1?.uuid) {
+        if (statusEl) statusEl.textContent = 'ルームが見つかりません';
+        return;
+      }
+      if (data?.player2?.uuid) {
+        if (statusEl) statusEl.textContent = 'ルームが満員です';
+        return;
+      }
       myRole = 'player2';
       window._set(window._ref(window._db, `rooms/${ROOM_ID}/player2`), makePlayerData(nickname));
-    } else {
-      if (statusEl) statusEl.textContent = 'ルームが満員です';
-      return;
     }
 
     registerDisconnectHandler();
@@ -1657,8 +1689,10 @@ function updatePlayerSlot(role, data) {
 
 function initWaitingScreen() {
   document.getElementById('waiting-room-label').textContent = ROOM_ID;
+  document.getElementById('waiting-hint').style.display = IS_HOST ? '' : 'none';
   document.getElementById('ready-btn').disabled = true;
   document.getElementById('waiting-status').textContent = '';
+  setupMatchSettings();
   window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
     const data = snap.val() || {};
     updatePlayerSlot('p1', data.player1);
@@ -1666,11 +1700,43 @@ function initWaitingScreen() {
     document.getElementById('wins-p1').textContent = data.player1?.wins ?? 0;
     document.getElementById('wins-p2').textContent = data.player2?.wins ?? 0;
     if (data.player1 && data.player2) document.getElementById('ready-btn').disabled = false;
+    const mode   = data.config?.matchMode   ?? 'wins';
+    const target = data.config?.matchTarget ?? 3;
+    updateMatchSettingsUI(mode, target);
   });
+}
+
+function setupMatchSettings() {
+  const isP1 = myRole === 'player1';
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.disabled = !isP1;
+    btn.onclick = isP1 ? () => {
+      window._update(window._ref(window._db, `rooms/${ROOM_ID}/config`), { matchMode: btn.dataset.mode });
+    } : null;
+  });
+  document.getElementById('target-minus').disabled = !isP1;
+  document.getElementById('target-plus').disabled  = !isP1;
+  document.getElementById('target-minus').onclick = isP1 ? () => {
+    const cur = parseInt(document.getElementById('match-target-num').textContent) || 3;
+    if (cur > 1) window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/matchTarget`), cur - 1);
+  } : null;
+  document.getElementById('target-plus').onclick = isP1 ? () => {
+    const cur = parseInt(document.getElementById('match-target-num').textContent) || 3;
+    if (cur < 9) window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/matchTarget`), cur + 1);
+  } : null;
+}
+
+function updateMatchSettingsUI(mode, target) {
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+  document.getElementById('match-target-num').textContent  = target;
+  document.getElementById('match-target-unit').textContent = mode === 'wins' ? '先取' : 'ラウンド';
 }
 
 document.getElementById('ready-btn').addEventListener('click', () => {
   document.getElementById('ready-btn').disabled = true;
+  document.querySelectorAll('.mode-btn, .target-btn').forEach(btn => btn.disabled = true);
   window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/ready`), true);
   document.getElementById('waiting-status').textContent = '相手の準備を待っています...';
 });
@@ -1680,6 +1746,7 @@ document.getElementById('waiting-cancel-btn').addEventListener('click', () => {
   const url = new URL(location.href);
   url.searchParams.delete('room');
   url.searchParams.delete('nick');
+  url.searchParams.delete('host');
   history.pushState({}, '', url.toString());
   goToTitle();
 });
@@ -1731,7 +1798,9 @@ function watchGameState() {
 
 function startOnlineCountdown(callback) {
   showPage('game');
+  document.getElementById('opponent-col').classList.remove('hidden');
   board = createBoard(); current = null; next = null; hold = null; draw();
+  if (opCtx) opCtx.clearRect(0, 0, opCanvas.width, opCanvas.height);
   const overlay = document.getElementById('countdown-overlay');
   const numEl   = document.getElementById('countdown-number');
   overlay.classList.remove('hidden');
@@ -1842,28 +1911,47 @@ function showOnlineResultFromDB() {
   window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
     const data = snap.val();
     if (!data) return;
-    const p1Wins  = data.player1?.wins ?? 0;
-    const p2Wins  = data.player2?.wins ?? 0;
-    const maxWins = data.config?.maxWins ?? 3;
-    const p1Name  = data.player1?.name ?? 'Player1';
-    const p2Name  = data.player2?.name ?? 'Player2';
-    const myWins  = myRole === 'player1' ? p1Wins : p2Wins;
-    const winsText = `${p1Name} ${p1Wins}勝 ー ${p2Name} ${p2Wins}勝`;
+    const p1Wins     = data.player1?.wins ?? 0;
+    const p2Wins     = data.player2?.wins ?? 0;
+    const matchMode  = data.config?.matchMode   ?? 'wins';
+    const matchTarget = data.config?.matchTarget ?? 3;
+    const p1Name     = data.player1?.name ?? 'Player1';
+    const p2Name     = data.player2?.name ?? 'Player2';
+    const myWins     = myRole === 'player1' ? p1Wins : p2Wins;
+    const opWins     = myRole === 'player1' ? p2Wins : p1Wins;
+    const winsText   = `${p1Name} ${p1Wins}勝 ー ${p2Name} ${p2Wins}勝`;
     stopBGM();
-    if (p1Wins >= maxWins || p2Wins >= maxWins) {
-      showOnlineResult(myWins >= maxWins ? 'YOU WIN!' : 'YOU LOSE', 'マッチ終了', false, winsText);
+    if (matchMode === 'rounds') {
+      const totalRounds = p1Wins + p2Wins;
+      if (totalRounds >= matchTarget) {
+        // 全ラウンド終了 → 勝利数比較
+        let title;
+        if      (myWins > opWins) title = 'YOU WIN!';
+        else if (myWins < opWins) title = 'YOU LOSE';
+        else                      title = 'DRAW';
+        showOnlineResult(title, 'マッチ終了', false, winsText, `全${matchTarget}ラウンド終了`);
+      } else {
+        const roundText = `第${totalRounds + 1} / 全${matchTarget}ラウンド`;
+        showOnlineResult(!gameOver ? 'ROUND WIN' : 'ROUND LOSE', '次のラウンドへ', true, winsText, roundText);
+      }
     } else {
-      showOnlineResult(!gameOver ? 'ROUND WIN' : 'ROUND LOSE', '次のラウンドへ', true, winsText);
+      // 先取モード
+      if (p1Wins >= matchTarget || p2Wins >= matchTarget) {
+        showOnlineResult(myWins >= matchTarget ? 'YOU WIN!' : 'YOU LOSE', 'マッチ終了', false, winsText);
+      } else {
+        showOnlineResult(!gameOver ? 'ROUND WIN' : 'ROUND LOSE', '次のラウンドへ', true, winsText);
+      }
     }
   }, { onlyOnce: true });
 }
 
-function showOnlineResult(title, msg, showRematch, winsText) {
+function showOnlineResult(title, msg, showRematch, winsText, roundText) {
   cancelAnimationFrame(animId);
   document.getElementById('gameover-anim').classList.add('hidden');
-  document.getElementById('online-result-title').textContent = title;
-  document.getElementById('online-result-msg').textContent   = msg;
-  document.getElementById('online-result-wins').textContent  = winsText || '';
+  document.getElementById('online-result-title').textContent  = title;
+  document.getElementById('online-result-msg').textContent    = msg;
+  document.getElementById('online-result-wins').textContent   = winsText   || '';
+  document.getElementById('online-result-rounds').textContent = roundText  || '';
   document.getElementById('online-rematch-btn').classList.toggle('hidden', !showRematch);
   document.getElementById('online-result').classList.remove('hidden');
 }
@@ -1899,7 +1987,19 @@ function cleanupRoom() {
   }
 }
 
-// ---- ルームID入力ボタン ----
+// ---- 部屋を作るボタン ----
+document.getElementById('room-create-btn').addEventListener('click', () => {
+  const nickname = document.getElementById('nickname-input').value.trim() || 'Player';
+  const roomId   = generateRoomId();
+  sessionStorage.setItem('tetris_nickname', nickname);
+  const url = new URL(location.href);
+  url.searchParams.set('room', roomId);
+  url.searchParams.set('nick', nickname);
+  url.searchParams.set('host', '1');
+  location.href = url.toString();
+});
+
+// ---- 部屋に参加するボタン ----
 document.getElementById('room-join-btn').addEventListener('click', () => {
   const roomId   = document.getElementById('room-input').value.trim();
   const nickname = document.getElementById('nickname-input').value.trim() || 'Player';
@@ -1911,6 +2011,7 @@ document.getElementById('room-join-btn').addEventListener('click', () => {
   const url = new URL(location.href);
   url.searchParams.set('room', roomId);
   url.searchParams.set('nick', nickname);
+  url.searchParams.delete('host');
   location.href = url.toString();
 });
 

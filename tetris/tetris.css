@@ -101,7 +101,19 @@ body {
 
 /* ===== ゲーム画面 ===== */
 #game-screen { background: #1a1a2e; }
+#fire-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.8s;
+}
 #game-container {
+  position: relative;
+  z-index: 1;
   display: flex;
   gap: 12px;
   align-items: flex-start;

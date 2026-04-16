@@ -260,6 +260,72 @@ canvas {
 }
 #waiting-cancel-btn:hover { color: #aaa; }
 
+/* ===== マッチ設定 ===== */
+#match-settings {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+#match-mode-btns {
+  display: flex;
+  gap: 8px;
+}
+.mode-btn {
+  padding: 7px 18px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 1px;
+  background: #0d0d1a;
+  color: #666;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.mode-btn.active {
+  background: #e94560;
+  color: #fff;
+  border-color: #e94560;
+}
+.mode-btn:hover:not(:disabled):not(.active) {
+  border-color: #e94560;
+  color: #e94560;
+}
+.mode-btn:disabled { opacity: 0.4; cursor: default; }
+#match-target-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  color: #ccc;
+}
+.target-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  line-height: 1;
+  background: #0d0d1a;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.2s, border-color 0.2s;
+}
+.target-btn:hover:not(:disabled) { background: #1a1a3a; border-color: #e94560; }
+.target-btn:disabled { opacity: 0.4; cursor: default; }
+#match-target-num {
+  font-size: 24px;
+  font-weight: bold;
+  color: #f0c040;
+  min-width: 28px;
+  text-align: center;
+}
+#match-target-unit { font-size: 13px; color: #888; }
+
 /* ===== オンラインリザルト ===== */
 #online-result {
   position: fixed;
@@ -294,6 +360,12 @@ canvas {
   color: #f0c040;
   font-weight: bold;
   letter-spacing: 2px;
+}
+#online-result-rounds {
+  font-size: 13px;
+  color: #888;
+  letter-spacing: 1px;
+  min-height: 18px;
 }
 #online-result-buttons { display: flex; gap: 16px; }
 #online-rematch-btn {
@@ -576,6 +648,33 @@ canvas {
   align-items: center;
   gap: 8px;
 }
+#room-create-btn {
+  padding: 10px 0;
+  font-size: 15px;
+  background: #e94560;
+  color: #fff;
+  border: 1px solid #e94560;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 2px;
+  width: 220px;
+  transition: background 0.2s, border-color 0.2s;
+}
+#room-create-btn:hover { background: #c73652; border-color: #c73652; }
+.room-divider {
+  font-size: 11px;
+  color: #444;
+  letter-spacing: 2px;
+  margin: 2px 0;
+}
+#room-join-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
 #room-input {
   padding: 8px 14px;
   font-size: 14px;
@@ -590,7 +689,7 @@ canvas {
 }
 #room-input:focus { outline: none; border-color: #e94560; }
 #room-join-btn {
-  padding: 10px 32px;
+  padding: 10px 0;
   font-size: 15px;
   background: #16213e;
   color: #e94560;
@@ -600,10 +699,10 @@ canvas {
   font-family: inherit;
   font-weight: bold;
   letter-spacing: 2px;
+  width: 220px;
   transition: background 0.2s, color 0.2s;
 }
 #room-join-btn:hover { background: #e94560; color: #fff; }
-#room-hint { font-size: 11px; color: #555; }
 #online-status {
   font-size: 12px;
   color: #4fc;

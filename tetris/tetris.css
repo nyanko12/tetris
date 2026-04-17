@@ -14,6 +14,7 @@ body {
   align-items: center;
 }
 .page.hidden { display: none; }
+.hidden { display: none; }
 
 /* ===== タイトル画面 ===== */
 #title-screen {
@@ -259,6 +260,19 @@ canvas {
   transition: color 0.2s;
 }
 #waiting-cancel-btn:hover { color: #aaa; }
+#waiting-keybind-btn {
+  background: #333;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #aaa;
+  font-size: 12px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  transition: background 0.2s, color 0.2s;
+}
+#waiting-keybind-btn:hover { background: #444; color: #eee; }
 
 /* ===== マッチ設定 ===== */
 #match-settings {
@@ -708,6 +722,147 @@ canvas {
   color: #4fc;
   min-height: 18px;
 }
+
+/* ===== 部屋作成オーバーレイ ===== */
+#create-room-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+#create-room-overlay.hidden { display: none; }
+#create-room-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  background: #0d0d1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 24px 32px;
+  min-width: 280px;
+}
+#create-room-title {
+  color: #e94560;
+  font-size: 18px;
+  margin: 0 0 4px;
+  letter-spacing: 2px;
+}
+#create-room-id-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+#create-room-id-input {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 14px;
+  background: #0d0d1a;
+  border: 1px solid #555;
+  border-radius: 4px;
+  color: #eee;
+  font-family: 'Courier New', monospace;
+  text-align: center;
+  letter-spacing: 2px;
+}
+#create-room-id-input:focus { outline: none; border-color: #e94560; }
+#create-room-id-gen {
+  padding: 8px 10px;
+  font-size: 12px;
+  background: #16213e;
+  color: #aaa;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: border-color 0.2s, color 0.2s;
+}
+#create-room-id-gen:hover { border-color: #e94560; color: #e94560; }
+#create-match-settings {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+#create-match-mode-btns {
+  display: flex;
+  gap: 8px;
+}
+.create-mode-btn {
+  padding: 7px 18px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #16213e;
+  color: #aaa;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+.create-mode-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+.create-mode-btn:hover:not(.active) { border-color: #e94560; color: #e94560; }
+#create-match-target-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  color: #ccc;
+}
+.create-target-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 18px;
+  background: #16213e;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.2s, border-color 0.2s;
+}
+.create-target-btn:hover { background: #1a1a3a; border-color: #e94560; }
+#create-match-target-num {
+  font-size: 24px;
+  font-weight: bold;
+  color: #fff;
+  min-width: 28px;
+  text-align: center;
+}
+#create-match-target-unit { font-size: 13px; color: #888; }
+#create-room-confirm-btn {
+  padding: 10px 0;
+  font-size: 15px;
+  background: #e94560;
+  color: #fff;
+  border: 1px solid #e94560;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 2px;
+  width: 100%;
+  transition: background 0.2s, border-color 0.2s;
+}
+#create-room-confirm-btn:hover { background: #c73652; border-color: #c73652; }
+#create-room-cancel-btn {
+  padding: 6px 0;
+  font-size: 13px;
+  background: none;
+  color: #666;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 1px;
+  width: 100%;
+  transition: color 0.2s;
+}
+#create-room-cancel-btn:hover { color: #aaa; }
 
 /* ===== オーバーレイ共通 ===== */
 #overlay {

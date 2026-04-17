@@ -54,6 +54,7 @@
         <button id="room-join-btn">部屋に参加する</button>
       </div>
     </div>
+
     <div id="title-controls">
       <span data-kb="move">←→</span> 移動 &nbsp;
       <span data-kb="rotateCW">↑</span> 右回転 &nbsp;
@@ -65,6 +66,31 @@
     </div>
   </div>
   <button id="title-keybind-btn">⚙ キー設定</button>
+</div>
+
+<!-- 部屋作成設定オーバーレイ -->
+<div id="create-room-overlay" class="hidden">
+  <div id="create-room-panel">
+    <h3 id="create-room-title">部屋を作る</h3>
+    <div id="create-room-id-row">
+      <input id="create-room-id-input" type="text" placeholder="ルームID（空欄で自動生成）" maxlength="20">
+      <button id="create-room-id-gen">自動生成</button>
+    </div>
+    <div id="create-match-settings">
+      <div id="create-match-mode-btns">
+        <button class="create-mode-btn active" data-mode="wins">先取勝利数</button>
+        <button class="create-mode-btn" data-mode="rounds">ラウンド数</button>
+      </div>
+      <div id="create-match-target-row">
+        <button class="create-target-btn" id="create-target-minus">－</button>
+        <span id="create-match-target-num">3</span>
+        <button class="create-target-btn" id="create-target-plus">＋</button>
+        <span id="create-match-target-unit">先取</span>
+      </div>
+    </div>
+    <button id="create-room-confirm-btn">部屋を作る</button>
+    <button id="create-room-cancel-btn">キャンセル</button>
+  </div>
 </div>
 
 <!-- 待機画面 -->
@@ -101,6 +127,7 @@
     <button id="ready-btn" disabled>準備完了</button>
     <p id="waiting-status"></p>
     <button id="waiting-cancel-btn">キャンセル</button>
+    <button id="waiting-keybind-btn">⚙ キー設定</button>
   </div>
 </div>
 
@@ -381,6 +408,7 @@ function closeKeybindOverlay() {
 
 document.getElementById('title-keybind-btn').addEventListener('click', openKeybindOverlay);
 document.getElementById('game-keybind-btn').addEventListener('click', openKeybindOverlay);
+document.getElementById('waiting-keybind-btn').addEventListener('click', openKeybindOverlay);
 
 document.getElementById('keybind-close').addEventListener('click', () => {
   closeKeybindOverlay();
@@ -437,9 +465,11 @@ const hctx = holdCanvas.getContext('2d');
 
 // ====== オンライン対戦 ======
 const urlParams = new URLSearchParams(location.search);
-const ROOM_ID   = urlParams.get('room');
-const IS_ONLINE = !!ROOM_ID;
-const IS_HOST   = urlParams.get('host') === '1';
+let ROOM_ID   = urlParams.get('room');
+let IS_ONLINE = !!ROOM_ID;
+let IS_HOST   = urlParams.get('host') === '1';
+let _pendingMatchMode   = urlParams.get('matchMode')   || 'wins';
+let _pendingMatchTarget = parseInt(urlParams.get('matchTarget')) || 3;
 let activeOnlineGame = false; // 実際にオンラインゲーム中かどうか
 let myRole = null;  // 'player1' or 'player2'
 let opUnsubs = []; // Firebase監視の解除関数
@@ -449,128 +479,31 @@ const opCtx    = opCanvas ? opCanvas.getContext('2d') : null;
 const OP_CELL  = 15; // 相手フィールドのセルサイズ（自分の半分）
 // ====== /オンライン対戦 ======
 
+const moveSE      = new Audio('music/move.mp3');
 const lineClearSE = new Audio('music/sword008.mp3');
 const gameOverSE  = new Audio('music/haiboku.mp3');
 const fallSE      = new Audio('music/fall.mp3');
 
-// カウントダウンBGM: Web Audio API で合成
-let _cdNodes = []; // 再生中ノードを管理（stop用）
-const countdownSE = {
-  currentTime: 0,
-  play() { _playCountdownBGM(); },
-  pause() { _stopCountdownBGM(); },
-};
+const countSE   = new Audio('music/count.mp3');
+const whistleSE = new Audio('music/sei_ge_hoissuru02.mp3');
+whistleSE.volume = 0.9;
 
-function _stopCountdownBGM() {
-  _cdNodes.forEach(n => { try { n.stop(); } catch(e){} });
-  _cdNodes = [];
-}
-
-function _playCountdownBGM() {
-  _stopCountdownBGM();
-  if (!audioCtx) initAudio();
-  if (!audioCtx) return;
-
-  const t0  = audioCtx.currentTime + 0.02;
-  const BPM = 128;
-  const B   = 60 / BPM;       // 1拍 ≈ 0.469s
-  const b8  = B / 2;          // 8分音符
-
-  // ---- ユーティリティ ----
-  function note(freq, start, dur, type, vol, freqEnd) {
-    const osc = audioCtx.createOscillator();
-    const g   = audioCtx.createGain();
-    osc.connect(g); g.connect(masterGain);
-    osc.type = type;
-    osc.frequency.setValueAtTime(freq, start);
-    if (freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, start + dur * 0.8);
-    g.gain.setValueAtTime(vol, start);
-    g.gain.exponentialRampToValueAtTime(0.001, start + dur);
-    osc.start(start); osc.stop(start + dur + 0.01);
-    _cdNodes.push(osc);
-  }
-
-  function kick(start) {
-    note(160, start, 0.18, 'sine', 1.4, 45);
-  }
-
-  function snare(start) {
-    const sr  = audioCtx.sampleRate;
-    const len = Math.ceil(sr * 0.12);
-    const buf = audioCtx.createBuffer(1, len, sr);
-    const d   = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    const hpf = audioCtx.createBiquadFilter();
-    hpf.type = 'highpass'; hpf.frequency.value = 1800;
-    const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0.55, start);
-    g.gain.exponentialRampToValueAtTime(0.001, start + 0.12);
-    src.connect(hpf); hpf.connect(g); g.connect(masterGain);
-    src.start(start); src.stop(start + 0.13);
-    _cdNodes.push(src);
-  }
-
-  function hihat(start, vol = 0.22) {
-    const sr  = audioCtx.sampleRate;
-    const len = Math.ceil(sr * 0.045);
-    const buf = audioCtx.createBuffer(1, len, sr);
-    const d   = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1);
-    const src = audioCtx.createBufferSource();
-    src.buffer = buf;
-    const hpf = audioCtx.createBiquadFilter();
-    hpf.type = 'highpass'; hpf.frequency.value = 7000;
-    const g = audioCtx.createGain();
-    g.gain.setValueAtTime(vol, start);
-    g.gain.exponentialRampToValueAtTime(0.001, start + 0.045);
-    src.connect(hpf); hpf.connect(g); g.connect(masterGain);
-    src.start(start); src.stop(start + 0.05);
-    _cdNodes.push(src);
-  }
-
-  function synth(freq, start, dur, vol = 0.28) {
-    note(freq, start, dur, 'square', vol);
-    note(freq * 2, start, dur * 0.7, 'sine', vol * 0.15); // 倍音で艶を追加
-  }
-
-  // ---- シーケンス (8拍 = 約3.75秒) ----
-  // ビジュアルカウントダウン: t0+0=「3」, t0+B*2=「2」, t0+B*4=「1」, t0+B*5.9≈GO
-
-  // 拍1 (「3」表示タイミング)
-  kick(t0);         synth(261.63, t0, B * 0.7);   // C4
-  hihat(t0 + b8);
-  snare(t0 + B);    synth(329.63, t0 + B, B * 0.7); // E4
-  hihat(t0 + B + b8);
-
-  // 拍3 (「2」表示タイミング ≈ t0+B*2)
-  kick(t0 + B*2);   synth(392.00, t0 + B*2, B * 0.7); // G4
-  hihat(t0 + B*2 + b8);
-  snare(t0 + B*3);  synth(440.00, t0 + B*3, B * 0.7); // A4
-  hihat(t0 + B*3 + b8);
-
-  // 拍5 (「1」表示タイミング ≈ t0+B*4)
-  kick(t0 + B*4);   synth(523.25, t0 + B*4, B * 0.6); // C5
-  hihat(t0 + B*4 + b8);
-  snare(t0 + B*5);  synth(659.25, t0 + B*5, B * 0.5); // E5 (テンション↑)
-  hihat(t0 + B*5 + b8);
-
-  // GO! ホイッスル音
-  const goT = t0 + B * 5.85;
-  const goDelay = Math.max(0, goT - audioCtx.currentTime);
-  setTimeout(() => {
-    const whistleSE = new Audio('music/sei_ge_hoissuru02.mp3');
-    whistleSE.volume = 0.9;
-    whistleSE.play().catch(() => {});
-  }, goDelay * 1000);
+function playCountSound() {
+  countSE.currentTime = 0;
+  countSE.play().catch(() => {});
 }
 
 let board, score, lines, level, dropInterval;
 let current, next, hold, canHold, gameOver, paused;
 let lastTime = 0, dropCounter = 0, lockCounter = 0;
-const LOCK_DELAY = 1000;
+const LOCK_DELAY = 500;
 let animId;
+let softDropping = false;
+const SOFT_DROP_INTERVAL = 50; // ms
+let onlineSpeedTimer = null;
+const ONLINE_SPEED_INTERVAL = 30000; // 30秒ごとに加速
+const ONLINE_SPEED_STEP = 40;        // 1段階あたり速くなるms
+const ONLINE_SPEED_MIN = 80;         // 最速dropInterval
 
 function createBoard() {
   return Array.from({length: ROWS}, () => new Array(COLS).fill(0));
@@ -699,8 +632,10 @@ function clearLines() {
     const pts = [0, 100, 300, 500, 800];
     score += (pts[cleared] || 800) * level;
     lines += cleared;
-    level = Math.min(10, lastLevel + Math.floor(lines / 10));
-    dropInterval = Math.max(100, 500 - (level - 1) * 40);
+    if (!IS_ONLINE) {
+      level = Math.min(10, lastLevel + Math.floor(lines / 10));
+      dropInterval = Math.max(100, 500 - (level - 1) * 40);
+    }
     updateUI();
     // ★ オンライン: スコア送信 + 攻撃キュー送信
     if (IS_ONLINE && myRole && window._db) {
@@ -873,7 +808,6 @@ function updateUI() {
   document.getElementById('level-display').textContent = level;
   document.getElementById('lines-display').textContent = lines;
   updateFireLevel(level);
-  bgmSpeed = 1.0 + (level - 1) / 9 * 0.7; // Lv1=1.0x → Lv10=1.7x
 }
 
 function drawCell(context, x, y, type, size=CELL) {
@@ -1006,7 +940,8 @@ function gameLoop(timestamp) {
     lockCounter = 0;
   }
 
-  if (dropCounter >= dropInterval) {
+  const effectiveInterval = softDropping ? SOFT_DROP_INTERVAL : dropInterval;
+  if (dropCounter >= effectiveInterval) {
     dropCounter = 0;
     if (!grounded) current.y++;
   }
@@ -1084,6 +1019,7 @@ function startGame(initialLevel = 1) {
   level = initialLevel;
   dropInterval = Math.max(100, 500 - (initialLevel - 1) * 40);
   dropCounter = 0;
+  softDropping = false;
   gameOver = false;
   paused = false;
   hold = null;
@@ -1098,12 +1034,24 @@ function startGame(initialLevel = 1) {
   gameOverSE.currentTime = 0;
   cancelAnimationFrame(gameOverAnimId);
   document.getElementById('gameover-anim').classList.add('hidden');
-  bgmSpeed = 1.0 + (initialLevel - 1) / 9 * 0.7;
   cancelAnimationFrame(animId);
   animId = requestAnimationFrame(gameLoop);
   startFireEffect();
-  if (!bgmPlaying) startBGM(MELODY_TITLE);
-  else if (activeMelody !== MELODY_TITLE) startBGM(MELODY_TITLE);
+  startBGM('game');
+  if (IS_ONLINE) startOnlineSpeedTimer();
+}
+
+function startOnlineSpeedTimer() {
+  stopOnlineSpeedTimer();
+  onlineSpeedTimer = setInterval(() => {
+    if (!gameOver) {
+      dropInterval = Math.max(ONLINE_SPEED_MIN, dropInterval - ONLINE_SPEED_STEP);
+    }
+  }, ONLINE_SPEED_INTERVAL);
+}
+
+function stopOnlineSpeedTimer() {
+  if (onlineSpeedTimer) { clearInterval(onlineSpeedTimer); onlineSpeedTimer = null; }
 }
 
 function showOverlay(title, msg, btnText) {
@@ -1150,178 +1098,49 @@ function renderHighScores() {
 // ====== /ハイスコア ======
 
 // ====== BGM ======
-let audioCtx = null, masterGain = null;
-let bgmPlaying = false, bgmLoopTimeout = null;
+const homeBGM = new Audio('music/home.mp3');
+homeBGM.loop = true;
+homeBGM.volume = 0.5;
 
-const BPM = 150;
-const Q = 60 / BPM;
+const gameBGM = new Audio('music/Cyber Tetris (2).mp3');
+gameBGM.loop = true;
+gameBGM.volume = 0.5;
 
-const NOTE_FREQ = {
-  'C4':261.63,'D4':293.66,'E4':329.63,'F4':349.23,'G4':392.00,'A4':440.00,'B4':493.88,
-  'C5':523.25,'D5':587.33,'E5':659.25,'F5':698.46,'G5':783.99,'A5':880.00,'-':0
-};
+let activeBGM = null;
+let bgmPlaying = false;
 
-// タイトル用: Korobeiniki (Tetris Theme A)
-const MELODY_TITLE = [
-  ['E5',Q],  ['B4',Q/2],['C5',Q/2],['D5',Q],  ['C5',Q/2],['B4',Q/2],
-  ['A4',Q],  ['A4',Q/2],['C5',Q/2],['E5',Q],  ['D5',Q/2],['C5',Q/2],
-  ['B4',Q*1.5],['C5',Q/2],['D5',Q],['E5',Q],
-  ['C5',Q],  ['A4',Q],  ['A4',Q*2],
-  ['-',Q/2], ['D5',Q],  ['F5',Q/2],['A5',Q],  ['G5',Q/2],['F5',Q/2],
-  ['E5',Q*1.5],['C5',Q/2],['E5',Q],['D5',Q/2],['C5',Q/2],
-  ['B4',Q],  ['B4',Q/2],['C5',Q/2],['D5',Q],  ['E5',Q],
-  ['C5',Q],  ['A4',Q],  ['A4',Q*2],
-];
-
-// ゲーム用: オリジナルアップテンポメロディ
-const QG = 60 / 180; // 速めのBPM
-const MELODY_GAME = [
-  // フレーズA
-  ['A4',QG/2],['C5',QG/2],['E5',QG],  ['A5',QG/2],['G5',QG/2],
-  ['F5',QG],  ['E5',QG/2],['D5',QG/2],['C5',QG],  ['-',QG],
-  ['E5',QG/2],['D5',QG/2],['C5',QG],  ['B4',QG/2],['A4',QG/2],
-  ['A4',QG*2],
-  // フレーズB
-  ['C5',QG/2],['D5',QG/2],['E5',QG],  ['G5',QG/2],['F5',QG/2],
-  ['E5',QG],  ['D5',QG/2],['C5',QG/2],['D5',QG],  ['-',QG],
-  ['E5',QG],  ['F5',QG/2],['E5',QG/2],['D5',QG],  ['C5',QG/2],['B4',QG/2],
-  ['A4',QG*2],
-  // フレーズC
-  ['A5',QG/2],['G5',QG/2],['F5',QG],  ['E5',QG/2],['D5',QG/2],
-  ['C5',QG],  ['D5',QG/2],['E5',QG/2],['F5',QG],  ['-',QG],
-  ['G5',QG/2],['F5',QG/2],['E5',QG],  ['D5',QG/2],['C5',QG/2],
-  ['A4',QG*2],
-  // フレーズD
-  ['E5',QG/2],['F5',QG/2],['G5',QG],  ['A5',QG/2],['G5',QG/2],
-  ['F5',QG],  ['E5',QG/2],['F5',QG/2],['G5',QG],  ['-',QG],
-  ['F5',QG/2],['E5',QG/2],['D5',QG],  ['E5',QG/2],['D5',QG/2],
-  ['C5',QG*2],
-];
-
-function initAudio() {
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  masterGain = audioCtx.createGain();
-  masterGain.gain.value = 0.18;
-  masterGain.connect(audioCtx.destination);
-}
-
-function scheduleNote(freq, start, dur) {
-  const osc = audioCtx.createOscillator();
-  const g = audioCtx.createGain();
-  osc.connect(g);
-  g.connect(masterGain);
-  osc.type = 'square';
-  osc.frequency.value = freq;
-  g.gain.setValueAtTime(0.5, start);
-  g.gain.exponentialRampToValueAtTime(0.001, start + dur * 0.88);
-  osc.start(start);
-  osc.stop(start + dur);
-}
-
-let activeMelody = MELODY_TITLE;
-let bgmSpeed = 1.0;
-
-function scheduleBGMLoop(startTime) {
-  if (!bgmPlaying) return;
-  const melody = activeMelody;
-  const speed = bgmSpeed;
-  const totalDur = melody.reduce((s,[,d])=>s+d/speed, 0);
-  let t = startTime;
-  for (const [note, dur] of melody) {
-    const d = dur / speed;
-    if (NOTE_FREQ[note]) scheduleNote(NOTE_FREQ[note], t, d * 0.92);
-    t += d;
-  }
-  const delay = (startTime + totalDur - audioCtx.currentTime - 0.15) * 1000;
-  bgmLoopTimeout = setTimeout(() => scheduleBGMLoop(startTime + totalDur), Math.max(0, delay));
-}
-
-function startBGM(melody = MELODY_TITLE) {
+function startBGM(type) {
   stopBGM();
-  activeMelody = melody;
-  initAudio();
+  activeBGM = (type === 'game') ? gameBGM : homeBGM;
+  activeBGM.currentTime = 0;
+  activeBGM.play().catch(() => {});
   bgmPlaying = true;
-  scheduleBGMLoop(audioCtx.currentTime + 0.1);
 }
 
-function stopBGM(fadeTime = 0.35) {
+function switchBGM(type) {
+  const target = (type === 'game') ? gameBGM : homeBGM;
+  if (activeBGM === target) return; // 同じ曲なら再起動しない
+  startBGM(type);
+}
+
+function stopBGM() {
   bgmPlaying = false;
-  clearTimeout(bgmLoopTimeout);
-  if (!audioCtx) return;
-  // 古いコンテキストはフェードアウト後に非同期で閉じる
-  const oldCtx  = audioCtx;
-  const oldGain = masterGain;
-  audioCtx  = null;
-  masterGain = null;
-  try {
-    oldGain.gain.setValueAtTime(oldGain.gain.value, oldCtx.currentTime);
-    oldGain.gain.linearRampToValueAtTime(0, oldCtx.currentTime + fadeTime);
-  } catch(e) {}
-  setTimeout(() => { try { oldCtx.close(); } catch(e) {} }, (fadeTime + 0.1) * 1000);
+  if (activeBGM) { activeBGM.pause(); activeBGM.currentTime = 0; activeBGM = null; }
 }
 
-function pauseBGM()  { if (masterGain) masterGain.gain.value = 0; }
-function resumeBGM() { if (masterGain) masterGain.gain.value = 0.18; }
+function pauseBGM()  { if (activeBGM) activeBGM.volume = 0.1; }
+function resumeBGM() { if (activeBGM) activeBGM.volume = 0.5; }
 
 function playLockSound() {
   fallSE.currentTime = 0;
   fallSE.play();
 }
 
+const rotateSE = new Audio('music/turn3.mp3');
+
 function playRotateSound() {
-  if (!audioCtx) return;
-  const t   = audioCtx.currentTime;
-  const dur = 0.18;
-
-  // --- ノイズ層: 高域から中域へ素早くスイープ（シュッの空気感） ---
-  const sr      = audioCtx.sampleRate;
-  const bufSize = Math.ceil(sr * dur);
-  const buf     = audioCtx.createBuffer(1, bufSize, sr);
-  const ch      = buf.getChannelData(0);
-  for (let i = 0; i < bufSize; i++) ch[i] = Math.random() * 2 - 1;
-
-  const noise = audioCtx.createBufferSource();
-  noise.buffer = buf;
-
-  // ハイパスで不要な低域をカット
-  const hpf = audioCtx.createBiquadFilter();
-  hpf.type = 'highpass';
-  hpf.frequency.setValueAtTime(3200, t);
-  hpf.frequency.exponentialRampToValueAtTime(800, t + dur);
-
-  // バンドパスで「シュ」の帯域を強調
-  const bpf = audioCtx.createBiquadFilter();
-  bpf.type = 'bandpass';
-  bpf.frequency.setValueAtTime(5500, t);
-  bpf.frequency.exponentialRampToValueAtTime(1400, t + dur * 0.85);
-  bpf.Q.value = 0.9;
-
-  const gNoise = audioCtx.createGain();
-  gNoise.gain.setValueAtTime(0, t);
-  gNoise.gain.linearRampToValueAtTime(0.7, t + 0.012);   // 素早いアタック
-  gNoise.gain.exponentialRampToValueAtTime(0.001, t + dur);
-
-  noise.connect(hpf);
-  hpf.connect(bpf);
-  bpf.connect(gNoise);
-  gNoise.connect(masterGain);
-  noise.start(t);
-  noise.stop(t + dur + 0.01);
-
-  // --- トーン層: 高めの音程がスッと下がる（シュッのキャラクタ） ---
-  const osc = audioCtx.createOscillator();
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(1800, t);
-  osc.frequency.exponentialRampToValueAtTime(480, t + dur * 0.7);
-
-  const gTone = audioCtx.createGain();
-  gTone.gain.setValueAtTime(0.18, t);
-  gTone.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.75);
-
-  osc.connect(gTone);
-  gTone.connect(masterGain);
-  osc.start(t);
-  osc.stop(t + dur);
+  rotateSE.currentTime = 0;
+  rotateSE.play().catch(() => {});
 }
 // ====== /BGM ======
 
@@ -1429,7 +1248,6 @@ function goToTitle() {
   hideOverlay();
   document.getElementById('online-result').classList.add('hidden');
   document.getElementById('opponent-col').classList.add('hidden');
-  stopBGM();
   gameOverSE.pause();
   gameOverSE.currentTime = 0;
   cancelAnimationFrame(gameOverAnimId);
@@ -1437,7 +1255,7 @@ function goToTitle() {
   stopFireEffect();
   renderHighScores();
   showPage('title');
-  startBGM(MELODY_TITLE);
+  switchBGM('title');
 }
 
 // ===== 難易度選択 =====
@@ -1468,8 +1286,6 @@ function startCountdown(onComplete) {
   const numEl   = document.getElementById('countdown-number');
   overlay.classList.remove('hidden');
   stopBGM();
-  countdownSE.currentTime = 0;
-  countdownSE.play();
 
   let count = 3;
   function tick() {
@@ -1477,11 +1293,14 @@ function startCountdown(onComplete) {
     numEl.style.animation = 'none';
     numEl.offsetHeight; // reflow でアニメリセット
     numEl.style.animation = 'countPop 0.95s ease-out forwards';
+    playCountSound();
     count--;
     if (count > 0) {
       setTimeout(tick, 1000);
     } else {
       setTimeout(() => {
+        whistleSE.currentTime = 0;
+        whistleSE.play().catch(() => {});
         overlay.classList.add('hidden');
         onComplete();
       }, 950);
@@ -1542,7 +1361,8 @@ startTitleBgAnim();
 
 // タイトル画面の初回操作でBGM開始（ブラウザのオートプレイ制限対策）
 function onFirstInteraction() {
-  if (!bgmPlaying) startBGM(MELODY_TITLE);
+  const onTitle = !document.getElementById('title-screen').classList.contains('hidden');
+  if (!bgmPlaying && onTitle) startBGM('title');
   document.removeEventListener('click', onFirstInteraction);
   document.removeEventListener('keydown', onFirstInteraction);
 }
@@ -1571,13 +1391,13 @@ document.addEventListener('keydown', e => {
   const code = e.code;
   if (code === keybinds.left) {
     e.preventDefault();
-    if (!collide(current, board, -1, 0)) { current.x--; lockCounter = 0; }
+    if (!collide(current, board, -1, 0)) { current.x--; lockCounter = 0; moveSE.currentTime = 0; moveSE.play().catch(() => {}); }
   } else if (code === keybinds.right) {
     e.preventDefault();
-    if (!collide(current, board, 1, 0)) { current.x++; lockCounter = 0; }
+    if (!collide(current, board, 1, 0)) { current.x++; lockCounter = 0; moveSE.currentTime = 0; moveSE.play().catch(() => {}); }
   } else if (code === keybinds.down) {
     e.preventDefault();
-    if (!collide(current, board, 0, 1)) { current.y++; dropCounter = 0; lockCounter = 0; }
+    softDropping = true;
   } else if (code === keybinds.rotateCW || code === keybinds.rotateCCW) {
     e.preventDefault();
     tryRotate(code === keybinds.rotateCW);
@@ -1588,7 +1408,7 @@ document.addEventListener('keydown', e => {
   } else if (code === keybinds.hold) {
     e.preventDefault();
     doHold();
-  } else if (code === keybinds.pause) {
+  } else if (code === keybinds.pause && !IS_ONLINE) {
     paused = !paused;
     if (!paused) {
       resumeBGM();
@@ -1600,6 +1420,10 @@ document.addEventListener('keydown', e => {
     }
   }
   draw();
+});
+
+document.addEventListener('keyup', e => {
+  if (e.code === keybinds.down) softDropping = false;
 });
 
 // ====== オンライン対戦 ======
@@ -1655,8 +1479,10 @@ function joinRoom(nickname) {
         return;
       }
       myRole = 'player1';
+      const initMode   = _pendingMatchMode;
+      const initTarget = _pendingMatchTarget;
       window._update(window._ref(window._db, `rooms/${ROOM_ID}`), {
-        config:  { matchMode: 'wins', matchTarget: 3, gameState: 'waiting' },
+        config:  { matchMode: initMode, matchTarget: initTarget, gameState: 'waiting' },
         player1: makePlayerData(nickname),
       });
     } else {
@@ -1692,12 +1518,13 @@ function registerDisconnectHandler() {
 
 function watchOpponentDisconnect() {
   const opRole = myRole === 'player1' ? 'player2' : 'player1';
-  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}`), snap => {
+  const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}`), snap => {
     if (snap.val() === null && onlineGameState === 'playing') {
       showOnlineResult('相手が切断しました', 'あなたの勝ち！', false, '');
       cleanupRoom();
     }
   });
+  opUnsubs.push(unsub);
 }
 
 // ---- 待機画面 ----
@@ -1829,15 +1656,20 @@ function startOnlineCountdown(callback) {
   const numEl   = document.getElementById('countdown-number');
   overlay.classList.remove('hidden');
   stopBGM();
-  countdownSE.currentTime = 0; countdownSE.play();
   let count = 3;
   function tick() {
     numEl.textContent = count;
     numEl.style.animation = 'none'; numEl.offsetHeight;
     numEl.style.animation = 'countPop 0.95s ease-out forwards';
+    playCountSound();
     count--;
     if (count > 0) setTimeout(tick, 1000);
-    else setTimeout(() => { overlay.classList.add('hidden'); callback(); }, 950);
+    else setTimeout(() => {
+      whistleSE.currentTime = 0;
+      whistleSE.play().catch(() => {});
+      overlay.classList.add('hidden');
+      callback();
+    }, 950);
   }
   tick();
 }
@@ -2004,6 +1836,7 @@ document.getElementById('online-result-home-btn').addEventListener('click', () =
 
 // ---- ルームクリーンアップ ----
 function cleanupRoom() {
+  stopOnlineSpeedTimer();
   activeOnlineGame = false;
   opUnsubs.forEach(fn => fn()); opUnsubs = [];
   if (gameStateUnsub) { gameStateUnsub(); gameStateUnsub = null; }
@@ -2014,17 +1847,65 @@ function cleanupRoom() {
   myRole = null;
 }
 
-// ---- 部屋を作るボタン ----
-document.getElementById('room-create-btn').addEventListener('click', () => {
-  const nickname = document.getElementById('nickname-input').value.trim() || 'Player';
-  const roomId   = generateRoomId();
-  sessionStorage.setItem('tetris_nickname', nickname);
-  const url = new URL(location.href);
-  url.searchParams.set('room', roomId);
-  url.searchParams.set('nick', nickname);
-  url.searchParams.set('host', '1');
-  location.href = url.toString();
-});
+// ---- 部屋作成パネル ----
+(function() {
+  let createMatchMode   = 'wins';
+  let createMatchTarget = 3;
+
+  function updateCreateUI() {
+    document.querySelectorAll('.create-mode-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === createMatchMode);
+    });
+    document.getElementById('create-match-target-num').textContent = createMatchTarget;
+    const unitEl = document.getElementById('create-match-target-unit');
+    unitEl.textContent = createMatchMode === 'wins' ? '先取' : 'ラウンド';
+  }
+
+  document.getElementById('room-create-btn').addEventListener('click', () => {
+    document.getElementById('create-room-id-input').value = '';
+    createMatchMode   = 'wins';
+    createMatchTarget = 3;
+    updateCreateUI();
+    document.getElementById('create-room-overlay').classList.remove('hidden');
+  });
+
+  document.getElementById('create-room-cancel-btn').addEventListener('click', () => {
+    document.getElementById('create-room-overlay').classList.add('hidden');
+  });
+
+  document.getElementById('create-room-id-gen').addEventListener('click', () => {
+    document.getElementById('create-room-id-input').value = generateRoomId();
+  });
+
+  document.querySelectorAll('.create-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      createMatchMode = btn.dataset.mode;
+      updateCreateUI();
+    });
+  });
+
+  document.getElementById('create-target-minus').addEventListener('click', () => {
+    if (createMatchTarget > 1) { createMatchTarget--; updateCreateUI(); }
+  });
+  document.getElementById('create-target-plus').addEventListener('click', () => {
+    if (createMatchTarget < 9) { createMatchTarget++; updateCreateUI(); }
+  });
+
+  document.getElementById('create-room-confirm-btn').addEventListener('click', () => {
+    const nickname = document.getElementById('nickname-input').value.trim() || 'Player';
+    const roomId   = document.getElementById('create-room-id-input').value.trim() || generateRoomId();
+    sessionStorage.setItem('tetris_nickname', nickname);
+    ROOM_ID   = roomId;
+    IS_ONLINE = true;
+    IS_HOST   = true;
+    _pendingMatchMode   = createMatchMode;
+    _pendingMatchTarget = createMatchTarget;
+    myNickname = nickname;
+    document.getElementById('create-room-overlay').classList.add('hidden');
+    if (window._firebaseReady) joinRoom(myNickname);
+    else window.addEventListener('firebase-ready', () => joinRoom(myNickname));
+  });
+})();
 
 // ---- 部屋に参加するボタン ----
 document.getElementById('room-join-btn').addEventListener('click', () => {
@@ -2035,11 +1916,12 @@ document.getElementById('room-join-btn').addEventListener('click', () => {
     return;
   }
   sessionStorage.setItem('tetris_nickname', nickname);
-  const url = new URL(location.href);
-  url.searchParams.set('room', roomId);
-  url.searchParams.set('nick', nickname);
-  url.searchParams.delete('host');
-  location.href = url.toString();
+  ROOM_ID   = roomId;
+  IS_ONLINE = true;
+  IS_HOST   = false;
+  myNickname = nickname;
+  if (window._firebaseReady) joinRoom(myNickname);
+  else window.addEventListener('firebase-ready', () => joinRoom(myNickname));
 });
 
 // URLにroom=IDがある場合はFirebase準備完了後に自動joinRoom

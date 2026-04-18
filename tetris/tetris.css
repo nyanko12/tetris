@@ -102,6 +102,58 @@ body {
 
 /* ===== ゲーム画面 ===== */
 #game-screen { background: #1a1a2e; }
+
+/* 危険度演出 */
+.vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(200,0,0,0.25) 100%);
+  opacity: 0;
+  z-index: 20;
+}
+.vignette.level-2 {
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(200,0,0,0.65) 100%);
+}
+.warning-bar {
+  position: absolute;
+  top: 0;
+  width: 18px;
+  height: 100%;
+  background: linear-gradient(to bottom, transparent 5%, rgba(255,50,50,0.85) 50%, transparent 95%);
+  box-shadow: 0 0 18px 4px rgba(255,30,30,0.5);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+  z-index: 20;
+}
+.warning-bar.left  { left: 0; }
+.warning-bar.right { right: 0; }
+.warning-bar.active { opacity: 1; }
+#track-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  text-align: right;
+  pointer-events: none;
+  z-index: 30;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+#track-toast.show { opacity: 1; }
+#track-toast-label {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: #aaa;
+  margin-bottom: 4px;
+}
+#track-toast-name {
+  font-size: 15px;
+  font-weight: bold;
+  color: #fff;
+  text-shadow: 0 0 10px rgba(100,200,255,0.8);
+  max-width: 260px;
+}
 #fire-canvas {
   position: absolute;
   inset: 0;
@@ -123,6 +175,22 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+#board-area {
+  display: flex;
+  gap: 4px;
+  align-items: flex-start;
+}
+#board-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+#preview-canvas {
+  display: none;
+  border: 2px solid #444;
+  border-bottom: none;
+  background: #07071a;
 }
 canvas {
   border: 2px solid #444;

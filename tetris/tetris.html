@@ -148,13 +148,25 @@
 <!-- ゲーム画面 -->
 <div id="game-screen" class="page hidden">
   <canvas id="fire-canvas"></canvas>
+  <div class="vignette" id="vignette"></div>
+  <div id="track-toast">
+    <div id="track-toast-label">NOW PLAYING</div>
+    <div id="track-toast-name"></div>
+  </div>
   <div id="game-container">
+    <div class="warning-bar left"  id="warn-bar-left"></div>
+    <div class="warning-bar right" id="warn-bar-right"></div>
     <div id="left-col">
       <div class="panel-box" id="hold-panel">
         <h3>HOLD</h3>
         <canvas id="hold-canvas" width="300" height="80"></canvas>
       </div>
-      <canvas id="board" width="300" height="600"></canvas>
+      <div id="board-area">
+        <div id="board-column">
+          <canvas id="preview-canvas" width="300" height="120"></canvas>
+          <canvas id="board" width="300" height="600"></canvas>
+        </div>
+      </div>
     </div>
     <div id="side-panel">
       <div class="panel-box">
@@ -479,6 +491,8 @@ const opCtx    = opCanvas ? opCanvas.getContext('2d') : null;
 const OP_CELL  = 15; // 相手フィールドのセルサイズ（自分の半分）
 // ====== /オンライン対戦 ======
 
+const buttonSE    = new Audio('music/button.mp3');
+const pauseSE     = new Audio('music/pause.mp3');
 const moveSE      = new Audio('music/move.mp3');
 const lineClearSE = new Audio('music/sword008.mp3');
 const gameOverSE  = new Audio('music/haiboku.mp3');
@@ -497,9 +511,22 @@ let board, score, lines, level, dropInterval;
 let current, next, hold, canHold, gameOver, paused;
 let lastTime = 0, dropCounter = 0, lockCounter = 0;
 const LOCK_DELAY = 500;
+const ANIM_DURATION = 400;  // ライン消去エフェクト全体の再生時間(ms)
 let animId;
 let softDropping = false;
 const SOFT_DROP_INTERVAL = 50; // ms
+
+// ===== 対戦攻撃システム =====
+const ATTACK_TABLE    = [0, 0, 1, 2, 4]; // 消去ライン数 → 攻撃力
+const REN_BONUS_TABLE = [0, 0, 1, 1, 2, 2, 3]; // REN数 → ボーナス（index上限6）
+const ATTACK_TIMER_MAX = 3.0; // 猶予タイマー初期値（秒）
+let renCount            = 0;
+let localPending        = 0;  // 自分の保留攻撃ライン数
+let attackTimer         = 0;  // 猶予タイマー残り秒数
+let lastGarbageHole     = -1; // 前回のお邪魔穴列
+let lastActionWasRotation = false;
+const previewCanvas = document.getElementById('preview-canvas');
+const pctx = previewCanvas ? previewCanvas.getContext('2d') : null;
 let onlineSpeedTimer = null;
 const ONLINE_SPEED_INTERVAL = 30000; // 30秒ごとに加速
 const ONLINE_SPEED_STEP = 40;        // 1段階あたり速くなるms
@@ -588,6 +615,7 @@ function tryRotate(isCW) {
       current.x += dx;
       current.y += dy;
       current.rotState = newState;
+      lastActionWasRotation = true;
       playRotateSound();
       return;
     }
@@ -616,14 +644,277 @@ function merge(piece, board) {
   });
 }
 
+// T-Spin判定（3コーナールール）
+function detectTSpin() {
+  if (!lastActionWasRotation || current.type !== 3) return false; // 3 = T
+  const cx = current.x + 1, cy = current.y + 1;
+  const corners = [[cy-1,cx-1],[cy-1,cx+1],[cy+1,cx-1],[cy+1,cx+1]];
+  let filled = 0;
+  for (const [r, c] of corners) {
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS || board[r][c]) filled++;
+  }
+  return filled >= 3;
+}
+
+// ===== お邪魔ブロック予告演出 =====
+function getWarningLevel(total) {
+  if (total >= 12) return 'MAX';
+  if (total >= 8)  return 3;
+  if (total >= 4)  return 2;
+  if (total >= 1)  return 1;
+  return 0;
+}
+
+function computeGarbageIcons(total) {
+  const icons = [];
+  let rem = total;
+  while (rem >= 10) { icons.push('large');  rem -= 10; }
+  while (rem >= 4)  { icons.push('medium'); rem -= 4;  }
+  while (rem >= 1)  { icons.push('small');  rem -= 1;  }
+  return icons;
+}
+
+function drawGarbagePreview() {
+  if (!pctx) return;
+  const W = previewCanvas.width;
+  const H = previewCanvas.height;
+  pctx.clearRect(0, 0, W, H);
+
+  // Faint grid
+  pctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  pctx.lineWidth = 1;
+  for (let c = 0; c < COLS; c++) {
+    for (let r = 0; r < 4; r++) {
+      pctx.strokeRect(c * CELL, r * CELL, CELL, CELL);
+    }
+  }
+
+  if (!IS_ONLINE || localPending <= 0) return;
+
+  const total = localPending;
+  const level = getWarningLevel(total);
+  const now   = Date.now();
+
+  // Wobble (Lv.1 is static)
+  const speed     = 0.003 + total * 0.0005;
+  const amplitude = level === 1 ? 0 : (2 + total * 0.4);
+  const offsetX   = Math.sin(now * speed) * amplitude;
+
+  // Level colors
+  let iconColor, glowColor;
+  if (level === 1) {
+    iconColor = '#aaa'; glowColor = 'rgba(180,180,180,0.5)';
+  } else if (level === 2) {
+    iconColor = '#fc0'; glowColor = 'rgba(255,180,0,0.8)';
+  } else if (level === 3) {
+    // Blink
+    iconColor = Math.sin(now * 0.012) > 0 ? '#f55' : '#c22';
+    glowColor = 'rgba(255,60,60,0.9)';
+  } else {
+    iconColor = '#f44'; glowColor = 'rgba(255,0,0,1.0)';
+  }
+
+  // Ceiling line
+  pctx.strokeStyle = glowColor;
+  pctx.lineWidth = 3;
+  pctx.beginPath(); pctx.moveTo(0, 3); pctx.lineTo(W, 3); pctx.stroke();
+
+  // Icon sizes
+  const IDIM = { large: [54, 54], medium: [98, 26], small: [22, 22] };
+  const GAP  = 5;
+  const icons = computeGarbageIcons(total);
+  const totalW = icons.reduce((s, t) => s + IDIM[t][0] + GAP, -GAP);
+  let x = Math.max(5, (W - totalW) / 2) + offsetX;
+
+  icons.forEach(type => {
+    const [iW, iH] = IDIM[type];
+    const iy = 10;
+
+    // Connector string from ceiling
+    pctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    pctx.lineWidth = 1;
+    pctx.beginPath();
+    pctx.moveTo(x + iW / 2, 4);
+    pctx.lineTo(x + iW / 2, iy);
+    pctx.stroke();
+
+    // Glow
+    pctx.shadowColor = glowColor;
+    pctx.shadowBlur  = type === 'large' ? 18 : 10;
+
+    // Body
+    pctx.fillStyle = iconColor;
+    pctx.fillRect(x, iy, iW, iH);
+
+    pctx.shadowBlur = 0;
+
+    // Highlight
+    pctx.fillStyle = 'rgba(255,255,255,0.28)';
+    pctx.fillRect(x, iy, iW, 4);
+    pctx.fillRect(x, iy, 3, iH);
+
+    // Shadow edge
+    pctx.fillStyle = 'rgba(0,0,0,0.4)';
+    pctx.fillRect(x,          iy + iH - 4, iW, 4);
+    pctx.fillRect(x + iW - 3, iy,          3,  iH);
+
+    // Text
+    pctx.fillStyle = 'rgba(0,0,0,0.75)';
+    pctx.textAlign    = 'center';
+    pctx.textBaseline = 'middle';
+    if (type === 'large') {
+      pctx.font = 'bold 30px sans-serif';
+      pctx.fillText('☠', x + iW / 2, iy + iH / 2);
+    } else if (type === 'medium') {
+      pctx.font = 'bold 12px Courier New';
+      pctx.fillText('▌▌▌▌', x + iW / 2, iy + iH / 2);
+    }
+
+    x += iW + GAP;
+  });
+
+  pctx.shadowBlur   = 0;
+  pctx.textAlign    = 'left';
+  pctx.textBaseline = 'alphabetic';
+
+  // Timer countdown bar at bottom
+  if (attackTimer > 0) {
+    const barY = H - 8;
+    const pct  = attackTimer / ATTACK_TIMER_MAX;
+    pctx.fillStyle = 'rgba(255,255,255,0.08)';
+    pctx.fillRect(0, barY, W, 5);
+    pctx.fillStyle = pct > 0.6 ? '#4fc' : pct > 0.3 ? '#ff0' : '#f44';
+    pctx.fillRect(0, barY, W * pct, 5);
+  }
+
+  // Lv.MAX: pulsing red overlay
+  if (level === 'MAX') {
+    const pulse = 0.07 + 0.05 * Math.sin(now * 0.009);
+    pctx.fillStyle = `rgba(255,0,0,${pulse})`;
+    pctx.fillRect(0, 0, W, H);
+  }
+}
+
+function updateAttackGauge() { drawGarbagePreview(); }
+
+// ===== 危険度演出システム =====
+const vignetteEl  = document.getElementById('vignette');
+const warnBarL    = document.getElementById('warn-bar-left');
+const warnBarR    = document.getElementById('warn-bar-right');
+const gameContainerEl = document.getElementById('game-container');
+let dangerLevel = 0;
+let shakeTimer  = 0;
+let vignetteOpacity = 0;
+
+function getDangerLevel(board) {
+  const highestRow = board.findIndex(row => row.some(cell => cell !== 0));
+  if (highestRow < 0) return 0;
+  if (highestRow <= 4) return 3;
+  if (highestRow <= 6) return 2;
+  if (highestRow < ROWS / 2) return 1;
+  return 0;
+}
+
+function onDangerLevelChange(prevLevel, nextLevel) {
+  // ヴィネットグラデーション切り替え（opacityはupdateDangerEffectsでlerp管理）
+  vignetteEl.className = nextLevel >= 2 ? 'vignette level-2' : 'vignette';
+  // 警告帯
+  const warnOn = nextLevel >= 2;
+  warnBarL.className = 'warning-bar left'  + (warnOn ? ' active' : '');
+  warnBarR.className = 'warning-bar right' + (warnOn ? ' active' : '');
+  // BGMテンポ
+  const tempo = nextLevel >= 3 ? 1.5 : nextLevel >= 1 ? 1.2 : 1.0;
+  if (activeBGM) activeBGM.playbackRate = tempo;
+  // シェイクリセット
+  if (nextLevel < 3) {
+    gameContainerEl.style.transform = '';
+    shakeTimer = 0;
+  }
+}
+
+const noiseOffscreen = document.createElement('canvas');
+noiseOffscreen.width = 300; noiseOffscreen.height = 600;
+const noiseOctx = noiseOffscreen.getContext('2d');
+
+function drawNoise(context, w, h) {
+  const imageData = noiseOctx.createImageData(w, h);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    if (Math.random() < 0.04) {
+      const b = Math.random() * 255;
+      data[i] = b; data[i+1] = b; data[i+2] = b; data[i+3] = 255;
+    }
+  }
+  noiseOctx.putImageData(imageData, 0, 0);
+  context.save();
+  context.globalAlpha = 0.07;
+  context.drawImage(noiseOffscreen, 0, 0);
+  context.restore();
+}
+
+function updateDangerEffects(timestamp, deltaTime) {
+  if (gameOver || paused) return;
+  const level = getDangerLevel(board);
+  if (level !== dangerLevel) {
+    onDangerLevelChange(dangerLevel, level);
+    dangerLevel = level;
+  }
+
+  // 目標opacity計算
+  let targetOpacity;
+  let lerpAlpha;
+  if (level === 0) {
+    targetOpacity = 0;   lerpAlpha = 0.04;
+  } else if (level === 1) {
+    targetOpacity = 1.0; lerpAlpha = 0.04;
+  } else if (level === 2) {
+    const t = (Math.sin((timestamp / 1500) * Math.PI * 2) + 1) / 2;
+    targetOpacity = 0.3 + t * 0.35; lerpAlpha = 0.10;
+  } else {
+    const t = (Math.sin((timestamp / 400) * Math.PI * 2) + 1) / 2;
+    targetOpacity = 0.5 + t * 0.40; lerpAlpha = 0.30;
+    shakeTimer -= deltaTime;
+    if (shakeTimer <= 0) {
+      const dx = (Math.random() - 0.5) * 8;
+      const dy = (Math.random() - 0.5) * 8;
+      gameContainerEl.style.transform = `translate(${dx}px, ${dy}px)`;
+      shakeTimer = 80 + Math.random() * 120;
+    }
+  }
+
+  // lerp でなめらかに近づける
+  vignetteOpacity += (targetOpacity - vignetteOpacity) * lerpAlpha;
+  vignetteEl.style.opacity = vignetteOpacity;
+}
+
+function resetDangerEffects() {
+  dangerLevel = 0;
+  shakeTimer  = 0;
+  vignetteOpacity = 0;
+  vignetteEl.className = 'vignette';
+  vignetteEl.style.opacity = '0';
+  warnBarL.className = 'warning-bar left';
+  warnBarR.className = 'warning-bar right';
+  gameContainerEl.style.transform = '';
+  if (activeBGM) activeBGM.playbackRate = 1.0;
+}
+// ===== 危険度演出ここまで =====
+
+let renDisplay = null; // { count, y, startTime }
+
 function clearLines() {
+  const isTSpin = IS_ONLINE ? detectTSpin() : false;
+  lastActionWasRotation = false;
+
   let cleared = 0;
+  const clearedRowYs = [];
   for (let r = ROWS - 1; r >= 0; r--) {
     if (board[r].every(v => v !== 0)) {
+      clearedRowYs.push(r);
       board.splice(r, 1);
       board.unshift(new Array(COLS).fill(0));
       cleared++;
-      r++; // 再チェック
+      r++;
     }
   }
   if (cleared > 0) {
@@ -637,11 +928,35 @@ function clearLines() {
       dropInterval = Math.max(100, 500 - (level - 1) * 40);
     }
     updateUI();
-    // ★ オンライン: スコア送信 + 攻撃キュー送信
+
+    // RENカウント更新（全モード共通）
+    renCount++;
+    if (renCount >= 2) {
+      const avgY = clearedRowYs.reduce((s, r) => s + r, 0) / clearedRowYs.length;
+      renDisplay = { count: renCount, y: avgY, startTime: performance.now() };
+    }
+
     if (IS_ONLINE && myRole && window._db) {
       window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/score`), score);
-      sendAttack(cleared);
+      // 攻撃力計算
+      let attack = ATTACK_TABLE[Math.min(cleared, 4)] ?? 4;
+      if (isTSpin) attack += cleared * 2; // T-Spinボーナス
+      attack += REN_BONUS_TABLE[Math.min(renCount, 6)]; // RENボーナス
+      // 相殺処理
+      const cancel = Math.min(attack, localPending);
+      localPending -= cancel;
+      attack -= cancel;
+      // ライン消去で猶予タイマーをリセット
+      attackTimer = ATTACK_TIMER_MAX;
+      if (attack > 0) {
+        const opRole = myRole === 'player1' ? 'player2' : 'player1';
+        window._runTransaction(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/pendingAttack`),
+          cur => (cur || 0) + attack);
+      }
+      drawGarbagePreview();
     }
+  } else {
+    renCount = 0;
   }
 }
 
@@ -679,14 +994,155 @@ function doHold() {
 }
 
 function hardDrop() {
+  const oldY = current.y;
   while (!collide(current, board, 0, 1)) {
     current.y++;
+  }
+  if (current.y > oldY) {
+    createWindLines(oldY, current.y, current.x * CELL, current.shape[0].length * CELL);
   }
   lockPiece();
 }
 
 const flashCells = []; // {x, y, t}
-const FLASH_DURATION = 300; // ms
+const FLASH_DURATION = 80; // ms (ロックフラッシュ)
+let clearEffects = [];      // ライン消去エフェクト
+let isClearAnimating = false;
+const sparkParticles = [];  // 火花パーティクル（ライン消去）
+let windEffects    = [];    // ハードドロップ風エフェクト
+let sparkleEffects = [];    // 設置キラキラパーティクル
+
+const MINO_COLOR_HSL = {
+  I: [180, 100, 50], O: [60,  100, 50], T: [300, 100, 50],
+  S: [120, 100, 40], Z: [0,   100, 50], J: [240, 100, 50], L: [30,  100, 50],
+};
+
+function getSparkleColor(type, life) {
+  const [h, s, l] = MINO_COLOR_HSL[type] || [0, 0, 100];
+  const brightness  = l + (100 - l) * (1 - life);
+  const saturation  = s * life;
+  return `hsla(${h}, ${saturation}%, ${brightness}%, ${life})`;
+}
+
+function createWindLines(oldY, newY, minoX, minoWidth) {
+  const yStart = oldY * CELL;
+  const yEnd   = newY * CELL;
+
+  // メイン閃光：ミノ幅いっぱいの帯（一瞬で消える）
+  windEffects.push({
+    cx: minoX + minoWidth / 2,
+    halfWInit: minoWidth / 2,
+    halfW: minoWidth / 2,
+    yStart, yEnd,
+    maxAlpha: 0.35,
+    duration: 140,
+    elapsed: 0,
+    layer: 'main',
+  });
+
+  // 残光：1ブロック幅の細い帯を2〜3本（ゆっくり消える）
+  const glowCount = 2 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < glowCount; i++) {
+    const cx = minoX + Math.random() * minoWidth;
+    windEffects.push({
+      cx,
+      halfWInit: CELL / 2,
+      halfW: CELL / 2,
+      yStart, yEnd,
+      maxAlpha: 0.15,
+      duration: 420,
+      elapsed: 0,
+      layer: 'glow',
+    });
+  }
+}
+
+function createSparkles(blocks, minoType) {
+  blocks.forEach(({ col, row }) => {
+    const bx = col * CELL, by = row * CELL;
+    [[bx, by + CELL], [bx + CELL, by + CELL], [bx, by], [bx + CELL, by]].forEach(([x, y]) => {
+      sparkleEffects.push({
+        x, y,
+        vx: (Math.random() - 0.5) * 1.5,
+        vy: -(1.5 + Math.random() * 1.5),
+        life: 1.0, size: 2 + Math.random() * 2,
+        minoType, elapsed: 0,
+      });
+    });
+  });
+}
+
+const SPARKLE_DURATION = 600;  // キラキラの消滅時間(ms)
+
+function updateDropEffects(ctx, dt) {
+  windEffects    = windEffects.filter(e => e.elapsed < e.duration);
+  sparkleEffects = sparkleEffects.filter(e => e.life > 0);
+
+  ctx.globalCompositeOperation = 'screen';
+  windEffects.forEach(e => {
+    e.elapsed += dt;
+    const progress = Math.min(e.elapsed / e.duration, 1.0);
+    // ease-in：最初ゆっくり、最後に一気に閉じる
+    const eased  = progress * progress * progress;
+    e.halfW = e.halfWInit * (1 - eased);
+    const a = e.maxAlpha * (1 - progress);
+    if (e.halfW < 0.5) return;
+
+    const h    = e.yEnd - e.yStart;
+    const left = e.cx - e.halfW;
+    const w    = e.halfW * 2;
+
+    // 縦グラデーション：透明→白（強い光）→透明
+    const vgrd = ctx.createLinearGradient(0, e.yStart, 0, e.yEnd);
+    vgrd.addColorStop(0,    `rgba(255,255,255,0)`);
+    vgrd.addColorStop(0.15, `rgba(255,255,255,${a})`);
+    vgrd.addColorStop(0.5,  `rgba(255,255,255,${a})`);
+    vgrd.addColorStop(1,    `rgba(255,255,255,0)`);
+
+    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = vgrd;
+    ctx.fillRect(left, e.yStart, w, h);
+  });
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1.0;
+
+  sparkleEffects.forEach(e => {
+    e.elapsed++;
+    e.vy *= 0.98;
+    e.y  += e.vy;
+    e.x  += e.vx + Math.sin(e.elapsed * 10) * 0.5;
+    e.size *= 0.97;
+    e.life -= dt / SPARKLE_DURATION;
+    ctx.globalAlpha = Math.max(e.life, 0);
+    ctx.fillStyle   = getSparkleColor(e.minoType, Math.max(e.life, 0));
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, Math.max(e.size, 0), 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.globalAlpha = 1.0;
+  ctx.lineWidth = 1;
+}
+
+function applyPendingGarbage() {
+  if (localPending <= 0) return;
+  // 前回と異なる穴列をランダムに決定
+  let hole;
+  do { hole = Math.floor(Math.random() * COLS); } while (hole === lastGarbageHole && COLS > 1);
+  lastGarbageHole = hole;
+  board.splice(0, localPending);
+  for (let i = 0; i < localPending; i++) {
+    const row = new Array(COLS).fill(8);
+    row[hole] = 0;
+    board.push(row);
+  }
+  localPending = 0;
+  attackTimer = 0;
+  if (myRole && window._db) {
+    window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/pendingAttack`), 0);
+  }
+  drawGarbagePreview();
+}
 
 function lockPiece() {
   const now = performance.now();
@@ -694,13 +1150,186 @@ function lockPiece() {
     if (val) flashCells.push({ x: current.x + c, y: current.y + r, t: now });
   }));
   playLockSound();
+
+  const isTSpin = IS_ONLINE ? detectTSpin() : false;
+  lastActionWasRotation = false;
+
+  // sparkle用にmerge前のブロック座標とミノ種別を記録
+  const lockedBlocks = [];
+  const lockedType = current.type;
+  current.shape.forEach((row, r) => row.forEach((val, c) => {
+    if (val) lockedBlocks.push({ col: current.x + c, row: current.y + r });
+  }));
+
   merge(current, board);
-  clearLines();
-  spawnNext();
-  // ★ オンライン: 盤面を送信（スコアはclearLines内で送信済み）
-  if (IS_ONLINE && myRole && window._db) {
-    window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+  createSparkles(lockedBlocks, lockedType);
+  current = null;
+
+  const fullRows = [];
+  for (let r = 0; r < ROWS; r++) {
+    if (board[r].every(v => v !== 0)) fullRows.push(r);
   }
+
+  if (fullRows.length > 0) {
+    const cleared = fullRows.length;
+    lineClearSE.currentTime = 0;
+    lineClearSE.play();
+
+    // 消去行を盤面から即時除去
+    [...fullRows].sort((a, b) => b - a).forEach(r => board.splice(r, 1));
+    for (let i = 0; i < cleared; i++) board.unshift(new Array(COLS).fill(0));
+
+    // スコア
+    const pts = [0, 100, 300, 500, 800];
+    score += (pts[cleared] || 800) * level;
+    lines += cleared;
+    if (!IS_ONLINE) {
+      level = Math.min(10, lastLevel + Math.floor(lines / 10));
+      dropInterval = Math.max(100, 500 - (level - 1) * 40);
+    }
+    updateUI();
+
+    // REN
+    renCount++;
+    if (renCount >= 2) {
+      const avgY = fullRows.reduce((s, r) => s + r, 0) / fullRows.length;
+      renDisplay = { count: renCount, y: avgY, startTime: performance.now() };
+    }
+
+    // 攻撃送信（オンライン）
+    if (IS_ONLINE && myRole && window._db) {
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/score`), score);
+      let attack = ATTACK_TABLE[Math.min(cleared, 4)] ?? 4;
+      if (isTSpin) attack += cleared * 2;
+      attack += REN_BONUS_TABLE[Math.min(renCount, 6)];
+      const cancel = Math.min(attack, localPending);
+      localPending -= cancel;
+      attack -= cancel;
+      attackTimer = ATTACK_TIMER_MAX;
+      if (attack > 0) {
+        const opRole = myRole === 'player1' ? 'player2' : 'player1';
+        window._runTransaction(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/pendingAttack`),
+          cur => (cur || 0) + attack);
+      }
+      drawGarbagePreview();
+    }
+    if (IS_ONLINE) applyPendingGarbage();
+    if (IS_ONLINE && myRole && window._db) {
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+    }
+
+    // エフェクト開始（spawnNextはアニメーション完了後）
+    createClearEffects(fullRows);
+    isClearAnimating = true;
+
+  } else {
+    renCount = 0;
+    if (IS_ONLINE) applyPendingGarbage();
+    spawnNext();
+    if (IS_ONLINE && myRole && window._db) {
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+    }
+  }
+}
+
+// ===== ライン消去エフェクト =====
+function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+function easeOutExpo(t)  { return t === 1 ? 1 : 1 - Math.pow(2, -10 * t); }
+
+function createClearEffects(clearedRows) {
+  clearEffects = clearedRows.map(y => ({ y, progress: 0.0, status: 'shrinking' }));
+}
+
+function updateClearEffects(dt) {
+  let allDone = true;
+  clearEffects.forEach(effect => {
+    effect.progress += dt / ANIM_DURATION;
+    if (effect.progress >= 0.5 && effect.status === 'shrinking') {
+      effect.status = 'spreading';
+    }
+    if (effect.progress >= 1.0 && !effect.sparked) {
+      effect.sparked = true;
+      const cy = effect.y * CELL + CELL / 2;
+      spawnSparkParticles(0,           cy);
+      spawnSparkParticles(COLS * CELL, cy);
+    }
+    effect.progress = Math.min(effect.progress, 1.0);
+    if (effect.progress < 1.0) allDone = false;
+  });
+
+  // パーティクル更新
+  for (let i = sparkParticles.length - 1; i >= 0; i--) {
+    const p = sparkParticles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= dt;
+    if (p.life <= 0) sparkParticles.splice(i, 1);
+  }
+
+  if (allDone && sparkParticles.length === 0) {
+    clearEffects = [];
+    isClearAnimating = false;
+    spawnNext();
+    if (IS_ONLINE && myRole && window._db) {
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+    }
+  }
+}
+
+function spawnSparkParticles(x, y) {
+  for (let i = 0; i < 5; i++) {
+    sparkParticles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 4,
+      vy: (Math.random() - 0.5) * 4,
+      life: 300, maxLife: 300,
+    });
+  }
+}
+
+function drawClearEffects(ctx) {
+  const boardW = COLS * CELL;
+  clearEffects.forEach(effect => {
+    const { y, progress, status } = effect;
+    if (status === 'shrinking') {
+      const t    = easeOutCubic(progress / 0.5);
+      const cy   = y * CELL + CELL / 2;
+      const h    = CELL * (1 - t);
+      const drawY = cy - h / 2;
+      ctx.globalAlpha = 1.0;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, drawY, boardW, h);
+    } else {
+      const t    = easeOutExpo((progress - 0.5) / 0.5);
+      const cy   = y * CELL + CELL / 2;
+      const cx   = boardW / 2;
+      const trails = [
+        { wm: 1.0, sm: 1.0, a: 0.9 },
+        { wm: 0.6, sm: 1.2, a: 0.5 },
+        { wm: 0.3, sm: 1.5, a: 0.25 },
+      ];
+      trails.forEach(tr => {
+        const halfW = cx * Math.min(t * tr.sm, 1.0);
+        const lh    = Math.max(1, 2 * tr.wm);
+        ctx.globalAlpha = tr.a * (1.0 - t);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(cx - halfW, cy - lh / 2, halfW, lh);
+        ctx.fillRect(cx,         cy - lh / 2, halfW, lh);
+      });
+      ctx.globalAlpha = 1.0;
+    }
+  });
+  ctx.globalAlpha = 1.0;
+}
+
+function drawSparkParticles(ctx) {
+  sparkParticles.forEach(p => {
+    const alpha = (p.life / p.maxLife) * 0.9;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
+  });
+  ctx.globalAlpha = 1.0;
 }
 
 // ===== 炎エフェクト =====
@@ -886,6 +1515,10 @@ function draw() {
     ctx.fillRect(f.x * CELL + 1, f.y * CELL + 1, CELL - 2, CELL - 2);
   }
 
+  // ライン消去エフェクト
+  drawClearEffects(ctx);
+  drawSparkParticles(ctx);
+
   // ポーズ表示
   if (paused) {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
@@ -898,6 +1531,40 @@ function draw() {
     ctx.textAlign = 'start';
     ctx.textBaseline = 'alphabetic';
   }
+
+  // REN表示
+  if (renDisplay) {
+    const age = performance.now() - renDisplay.startTime;
+    const duration = 1800;
+    if (age < duration) {
+      const alpha = Math.max(0, 1 - age / duration);
+      const floatY = renDisplay.y * CELL + CELL / 2 - (age / duration) * 40;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const cx = canvas.width / 2;
+      // 影
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.font = 'bold 44px Courier New';
+      ctx.fillText(renDisplay.count, cx + 2, floatY + 2);
+      ctx.font = 'bold 16px Courier New';
+      ctx.fillText('REN', cx + 2, floatY + 30);
+      // 本体
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 44px Courier New';
+      ctx.fillText(renDisplay.count, cx, floatY);
+      ctx.fillStyle = '#fc0';
+      ctx.font = 'bold 16px Courier New';
+      ctx.fillText('REN', cx, floatY + 28);
+      ctx.restore();
+    } else {
+      renDisplay = null;
+    }
+  }
+
+  // LEVEL3 ノイズエフェクト
+  if (dangerLevel === 3 && !paused) drawNoise(ctx, canvas.width, canvas.height);
 }
 
 function drawMiniPiece(context, cnv, type, dimmed) {
@@ -930,23 +1597,61 @@ function gameLoop(timestamp) {
   lastTime = timestamp;
   dropCounter += dt;
 
-  const grounded = collide(current, board, 0, 1);
-  if (grounded) {
-    lockCounter += dt;
-    if (lockCounter >= LOCK_DELAY) {
-      lockPiece();
-    }
-  } else {
-    lockCounter = 0;
+  // ライン消去アニメーション中はドロップ処理をスキップ
+  if (isClearAnimating) {
+    updateClearEffects(dt);
+    draw();
+    updateDropEffects(ctx, dt);
+    drawGarbagePreview();
+    updateDangerEffects(timestamp, dt);
+    if (!gameOver) animId = requestAnimationFrame(gameLoop);
+    return;
   }
 
-  const effectiveInterval = softDropping ? SOFT_DROP_INTERVAL : dropInterval;
-  if (dropCounter >= effectiveInterval) {
-    dropCounter = 0;
-    if (!grounded) current.y++;
+  // 猶予タイマー（お邪魔ブロック反映）
+  if (IS_ONLINE && current && localPending > 0 && attackTimer > 0) {
+    attackTimer -= dt / 1000;
+    if (attackTimer <= 0) {
+      attackTimer = 0;
+      applyPendingGarbage();
+      // ガベージ挿入後に現在ピースが衝突していたら押し上げ
+      if (current && collide(current, board)) {
+        while (current.y > 0 && collide(current, board)) current.y--;
+        if (collide(current, board)) {
+          current = null; gameOver = true;
+          handleGameOver(); stopBGM();
+          gameOverSE.currentTime = 0; gameOverSE.play();
+          return;
+        }
+      }
+      if (myRole && window._db) {
+        window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+      }
+    }
+  }
+
+  if (current) {
+    const grounded = collide(current, board, 0, 1);
+    if (grounded) {
+      lockCounter += dt;
+      if (lockCounter >= LOCK_DELAY) {
+        lockPiece();
+      }
+    } else {
+      lockCounter = 0;
+    }
+
+    const effectiveInterval = softDropping ? SOFT_DROP_INTERVAL : dropInterval;
+    if (dropCounter >= effectiveInterval) {
+      dropCounter = 0;
+      if (!grounded) current.y++;
+    }
   }
 
   draw();
+  updateDropEffects(ctx, dt);
+  drawGarbagePreview();
+  updateDangerEffects(timestamp, dt);
   if (!gameOver) animId = requestAnimationFrame(gameLoop);
 }
 
@@ -1026,6 +1731,21 @@ function startGame(initialLevel = 1) {
   canHold = true;
   _bag = [];
   lockCounter = 0;
+  renCount = 0;
+  renDisplay = null;
+  localPending = 0;
+  attackTimer = 0;
+  lastGarbageHole = -1;
+  lastActionWasRotation = false;
+  clearEffects = [];
+  isClearAnimating = false;
+  sparkParticles.length = 0;
+  flashCells.length = 0;
+  windEffects = [];
+  sparkleEffects = [];
+  if (previewCanvas) previewCanvas.style.display = IS_ONLINE ? 'block' : 'none';
+  resetDangerEffects();
+  drawGarbagePreview();
   next = createPiece(randomType());
   spawnNext();
   updateUI();
@@ -1102,30 +1822,64 @@ const homeBGM = new Audio('music/home.mp3');
 homeBGM.loop = true;
 homeBGM.volume = 0.5;
 
-const gameBGM = new Audio('music/Cyber Tetris (2).mp3');
-gameBGM.loop = true;
-gameBGM.volume = 0.5;
+const GAME_BGM_FILES = [
+  'music/play/Circuit Psalms.mp3',
+  'music/play/Copper Circuit.mp3',
+  'music/play/Crystal Firewall.mp3',
+  'music/play/Cyber Tetris (2).mp3',
+  'music/play/Hyperpolaroid.mp3',
+];
+const gameBGMs = GAME_BGM_FILES.map(src => {
+  const a = new Audio(src);
+  a.loop = true;
+  a.volume = 0.5;
+  return a;
+});
+let currentGameBGM = null;
 
 let activeBGM = null;
 let bgmPlaying = false;
 
 function startBGM(type) {
   stopBGM();
-  activeBGM = (type === 'game') ? gameBGM : homeBGM;
+  if (type === 'game') {
+    // 前回と異なる曲をランダムに選ぶ
+    const choices = gameBGMs.length > 1
+      ? gameBGMs.filter(b => b !== currentGameBGM)
+      : gameBGMs;
+    currentGameBGM = choices[Math.floor(Math.random() * choices.length)];
+    activeBGM = currentGameBGM;
+    showTrackToast(GAME_BGM_FILES[gameBGMs.indexOf(currentGameBGM)]);
+  } else {
+    activeBGM = homeBGM;
+  }
   activeBGM.currentTime = 0;
   activeBGM.play().catch(() => {});
   bgmPlaying = true;
 }
 
+let trackToastTimer = null;
+function showTrackToast(src) {
+  const name = src.replace(/^.*\//, '').replace(/\.mp3$/i, '');
+  const toast = document.getElementById('track-toast');
+  document.getElementById('track-toast-name').textContent = name;
+  clearTimeout(trackToastTimer);
+  toast.classList.add('show');
+  trackToastTimer = setTimeout(() => toast.classList.remove('show'), 3500);
+}
+
 function switchBGM(type) {
-  const target = (type === 'game') ? gameBGM : homeBGM;
-  if (activeBGM === target) return; // 同じ曲なら再起動しない
+  if (type === 'game') {
+    if (gameBGMs.includes(activeBGM)) return; // すでにゲームBGM再生中
+  } else {
+    if (activeBGM === homeBGM) return;
+  }
   startBGM(type);
 }
 
 function stopBGM() {
   bgmPlaying = false;
-  if (activeBGM) { activeBGM.pause(); activeBGM.currentTime = 0; activeBGM = null; }
+  if (activeBGM) { activeBGM.pause(); activeBGM.currentTime = 0; activeBGM.playbackRate = 1.0; activeBGM = null; }
 }
 
 function pauseBGM()  { if (activeBGM) activeBGM.volume = 0.1; }
@@ -1369,6 +2123,13 @@ function onFirstInteraction() {
 document.addEventListener('click', onFirstInteraction);
 document.addEventListener('keydown', onFirstInteraction);
 
+document.addEventListener('click', e => {
+  if (e.target.closest('button')) {
+    buttonSE.currentTime = 0;
+    buttonSE.play().catch(() => {});
+  }
+});
+
 document.addEventListener('keydown', e => {
   // タイトル画面でSpaceスタート（キー設定中は無視）
   if (!document.getElementById('title-screen').classList.contains('hidden')) {
@@ -1391,12 +2152,13 @@ document.addEventListener('keydown', e => {
   const code = e.code;
   if (code === keybinds.left) {
     e.preventDefault();
-    if (!collide(current, board, -1, 0)) { current.x--; lockCounter = 0; moveSE.currentTime = 0; moveSE.play().catch(() => {}); }
+    if (!collide(current, board, -1, 0)) { current.x--; lockCounter = 0; lastActionWasRotation = false; moveSE.currentTime = 0; moveSE.play().catch(() => {}); }
   } else if (code === keybinds.right) {
     e.preventDefault();
-    if (!collide(current, board, 1, 0)) { current.x++; lockCounter = 0; moveSE.currentTime = 0; moveSE.play().catch(() => {}); }
+    if (!collide(current, board, 1, 0)) { current.x++; lockCounter = 0; lastActionWasRotation = false; moveSE.currentTime = 0; moveSE.play().catch(() => {}); }
   } else if (code === keybinds.down) {
     e.preventDefault();
+    lastActionWasRotation = false;
     softDropping = true;
   } else if (code === keybinds.rotateCW || code === keybinds.rotateCCW) {
     e.preventDefault();
@@ -1404,12 +2166,14 @@ document.addEventListener('keydown', e => {
     lockCounter = 0;
   } else if (code === keybinds.hardDrop) {
     e.preventDefault();
+    lastActionWasRotation = false;
     hardDrop();
   } else if (code === keybinds.hold) {
     e.preventDefault();
     doHold();
   } else if (code === keybinds.pause && !IS_ONLINE) {
     paused = !paused;
+    pauseSE.currentTime = 0; pauseSE.play();
     if (!paused) {
       resumeBGM();
       lastTime = performance.now();
@@ -1674,33 +2438,19 @@ function startOnlineCountdown(callback) {
   tick();
 }
 
-// ---- 攻撃キュー ----
-function sendAttack(clearedLines) {
-  const attackLines = [0, 0, 1, 2, 4][clearedLines] ?? 4;
-  if (!attackLines || !IS_ONLINE || !myRole || !window._db) return;
-  const opRole = myRole === 'player1' ? 'player2' : 'player1';
-  window._push(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/attackQueue`), attackLines);
-}
-
+// ---- 攻撃監視（pendingAttack） ----
 function watchAttackQueue() {
-  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/attackQueue`), snap => {
-    const queue = snap.val();
-    if (!queue || gameOver) return;
-    const total = Object.values(queue).reduce((sum, n) => sum + n, 0);
-    if (total > 0) { addGarbageLines(total); draw(); }
-    window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/attackQueue`), null);
+  const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/pendingAttack`), snap => {
+    if (gameOver) return;
+    const newVal = snap.val() || 0;
+    if (newVal > localPending) {
+      // 新規攻撃を受信 → 猶予タイマーをリセット
+      attackTimer = ATTACK_TIMER_MAX;
+    }
+    localPending = newVal;
+    drawGarbagePreview();
   });
-}
-
-// ---- ガベージライン ----
-function addGarbageLines(count) {
-  board.splice(0, count);
-  for (let i = 0; i < count; i++) {
-    const hole = Math.floor(Math.random() * COLS);
-    const row  = new Array(COLS).fill(8);
-    row[hole]  = 0;
-    board.push(row);
-  }
+  opUnsubs.push(unsub);
 }
 
 // ---- 相手盤面・スコア監視 ----
@@ -1723,7 +2473,6 @@ function drawOpponentBoard(opBoard) {
 }
 
 function listenOpponentBoard() {
-  opUnsubs.forEach(fn => fn()); opUnsubs = [];
   const opRole = myRole === 'player1' ? 'player2' : 'player1';
   const unsubBoard = window._onValue(
     window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/board`),
@@ -1741,7 +2490,7 @@ function listenOpponentBoard() {
       }
     }
   );
-  opUnsubs = [unsubBoard, unsubScore];
+  opUnsubs.push(unsubBoard, unsubScore);
 }
 
 // ---- ゲームオーバー・勝利判定 ----
@@ -1818,10 +2567,14 @@ function rematch() {
   document.getElementById('online-result').classList.add('hidden');
   opUnsubs.forEach(fn => fn()); opUnsubs = [];
   if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
-  const resetData = { board: null, score: 0, isGameOver: false, ready: false, attackQueue: null };
+  const resetData = { board: null, score: 0, isGameOver: false, ready: false, pendingAttack: 0 };
   window._update(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`), resetData);
   if (myRole === 'player1') {
-    window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'waiting');
+    const opRole = 'player2';
+    window._update(window._ref(window._db, `rooms/${ROOM_ID}`), {
+      [`${opRole}/ready`]: false,
+      'config/gameState': 'waiting'
+    });
   }
   showPage('waiting');
   initWaitingScreen();

@@ -2947,7 +2947,7 @@ function handleGameOver() {
 
 function watchOpponentGameOver() {
   const opRole = myRole === 'player1' ? 'player2' : 'player1';
-  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/isGameOver`), snap => {
+  const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/isGameOver`), snap => {
     // 自分以外が全員ゲームオーバー → 1st WINNER
     if (snap.val() === true && !gameOver && !gameEndResult) {
       stopBGM();
@@ -2957,6 +2957,7 @@ function watchOpponentGameOver() {
       window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'result');
     }
   });
+  opUnsubs.push(unsub);
 }
 
 // ---- リザルト ----
@@ -3153,10 +3154,16 @@ function cleanupRoom() {
   if (gameStateUnsub) { gameStateUnsub(); gameStateUnsub = null; }
   if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
   if (IS_ONLINE && myRole && window._db) {
-    window._remove(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`));
+    if (IS_HOST) {
+      // ホスト退出時は部屋ごと削除（同IDでの再作成を可能にする）
+      window._remove(window._ref(window._db, `rooms/${ROOM_ID}`));
+    } else {
+      window._remove(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`));
+    }
   }
   myRole = null;
   IS_ONLINE = false;
+  IS_HOST   = false;
   ROOM_ID   = null;
 }
 

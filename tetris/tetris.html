@@ -2550,6 +2550,7 @@ document.getElementById('title-start-btn').addEventListener('click', () => {
 let lastLevel = 1;
 document.getElementById('overlay-btn').addEventListener('click', () => {
   hideOverlay();
+  stopResultBGM();
   startCountdown(() => startGame(lastLevel));
 });
 

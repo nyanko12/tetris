@@ -181,6 +181,16 @@ body {
   flex-direction: column;
   gap: 8px;
 }
+#board-row {
+  display: flex;
+  align-items: flex-start;
+}
+#gauge-canvas {
+  display: none;
+  background: #0d0d1a;
+  border: 2px solid #333;
+  border-right: none;
+}
 #board-area {
   display: flex;
   gap: 4px;
@@ -714,11 +724,30 @@ canvas {
 }
 #home-btn:hover { color: #ccc; border-color: #888; }
 
+#hold-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#my-name-panel {
+  background: #16213e;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 6px 12px;
+  color: #e94560;
+  font-size: 13px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  text-align: center;
+}
+#my-name-panel.hidden { display: none; }
+
 #opponent-col {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-width: 154px;
+  min-width: 304px;
 }
 #opponent-col.hidden { display: none; }
 #opponent-board {

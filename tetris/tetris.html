@@ -1123,24 +1123,79 @@ function updateDropEffects(ctx, dt) {
   ctx.lineWidth = 1;
 }
 
+let garbageRiseAnim = null;
+const GARBAGE_RISE_MS = 80; // 1行あたりのアニメ時間(ms)
+
 function applyPendingGarbage() {
   if (localPending <= 0) return;
+  const count = localPending;
   // 前回と異なる穴列をランダムに決定
   let hole;
   do { hole = Math.floor(Math.random() * COLS); } while (hole === lastGarbageHole && COLS > 1);
   lastGarbageHole = hole;
-  board.splice(0, localPending);
-  for (let i = 0; i < localPending; i++) {
+  board.splice(0, count);
+  for (let i = 0; i < count; i++) {
     const row = new Array(COLS).fill(8);
     row[hole] = 0;
     board.push(row);
   }
+  garbageRiseAnim = { rows: count, hole, startTime: performance.now() };
   localPending = 0;
   attackTimer = 0;
   if (myRole && window._db) {
     window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/pendingAttack`), 0);
   }
   drawGarbagePreview();
+}
+
+function drawGarbageRise() {
+  if (!garbageRiseAnim) return;
+  const { rows, hole, startTime } = garbageRiseAnim;
+  const elapsed = performance.now() - startTime;
+  const H = canvas.height;
+  const W = canvas.width;
+  const RISE = GARBAGE_RISE_MS;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, W, H);
+  ctx.clip();
+
+  let allDone = true;
+
+  for (let i = 0; i < rows; i++) {
+    // i=0: 一番下のガベージ行 (ROWS-1) から順に上へ
+    const boardRow = ROWS - 1 - i;
+    const finalY = boardRow * CELL;
+    const rowElapsed = elapsed - i * RISE;
+    const progress = rowElapsed < 0 ? -1 : Math.min(rowElapsed / RISE, 1);
+
+    if (progress < 1) allDone = false;
+
+    // 最終位置を背景で上書き（通常描画を隠す）
+    ctx.fillStyle = '#0d0d1a';
+    ctx.fillRect(0, finalY, W, CELL + 1);
+
+    if (progress < 0) continue; // まだ開始前
+
+    const t = 1 - Math.pow(1 - progress, 2); // ease out quad
+    const currentY = H + (finalY - H) * t;
+
+    for (let c = 0; c < COLS; c++) {
+      if (c === hole) continue;
+      ctx.fillStyle = '#888888';
+      ctx.fillRect(c * CELL + 1, currentY + 1, CELL - 2, CELL - 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.fillRect(c * CELL + 1, currentY + 1, CELL - 2, 4);
+      ctx.fillRect(c * CELL + 1, currentY + 1, 4, CELL - 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.fillRect(c * CELL + 1, currentY + CELL - 5, CELL - 2, 4);
+      ctx.fillRect(c * CELL + CELL - 5, currentY + 1, 4, CELL - 2);
+    }
+  }
+
+  ctx.restore();
+  if (allDone) garbageRiseAnim = null;
 }
 
 function lockPiece() {
@@ -1477,6 +1532,9 @@ function draw() {
       drawCell(ctx, c, r, val);
     });
   });
+
+  // お邪魔ブロック湧き出しアニメ
+  drawGarbageRise();
 
   // ゴースト
   if (current) {
@@ -2086,6 +2144,7 @@ function startGame(initialLevel = 1) {
   localPending = 0;
   attackTimer = 0;
   lastGarbageHole = -1;
+  garbageRiseAnim = null;
   lastActionWasRotation = false;
   clearEffects = [];
   isClearAnimating = false;

@@ -129,7 +129,12 @@ body {
 }
 .warning-bar.left  { left: 0; }
 .warning-bar.right { right: 0; }
-.warning-bar.active { opacity: 1; }
+.warning-bar.pulse-slow { animation: warnPulse 1.4s ease-in-out infinite; }
+.warning-bar.pulse-fast { animation: warnPulse 0.35s ease-in-out infinite; }
+@keyframes warnPulse {
+  0%, 100% { opacity: 0.15; }
+  50%       { opacity: 1; }
+}
 #track-toast {
   position: fixed;
   top: 20px;
@@ -1072,9 +1077,9 @@ canvas {
 #gameover-anim {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.72);
   z-index: 50;
   overflow: hidden;
+  background: rgba(0, 0, 0, 0.5) !important;
 }
 #gameover-anim.hidden { display: none; }
 .go-char {

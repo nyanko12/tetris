@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>テトリス</title>
-<link rel="stylesheet" href="tetris.css">
+<link rel="stylesheet" href="tetris.css?v=3">
 
 <!-- Firebase 初期化 -->
 <script type="module">
@@ -819,9 +819,9 @@ function onDangerLevelChange(prevLevel, nextLevel) {
   // ヴィネットグラデーション切り替え（opacityはupdateDangerEffectsでlerp管理）
   vignetteEl.className = nextLevel >= 2 ? 'vignette level-2' : 'vignette';
   // 警告帯
-  const warnOn = nextLevel >= 2;
-  warnBarL.className = 'warning-bar left'  + (warnOn ? ' active' : '');
-  warnBarR.className = 'warning-bar right' + (warnOn ? ' active' : '');
+  const warnCls = nextLevel >= 3 ? ' pulse-fast' : nextLevel >= 2 ? ' pulse-slow' : '';
+  warnBarL.className = 'warning-bar left'  + warnCls;
+  warnBarR.className = 'warning-bar right' + warnCls;
   // BGMテンポ
   const tempo = nextLevel >= 3 ? 1.5 : nextLevel >= 1 ? 1.2 : 1.0;
   if (activeBGM) activeBGM.playbackRate = tempo;
@@ -894,7 +894,7 @@ function resetDangerEffects() {
   vignetteEl.className = 'vignette';
   vignetteEl.style.opacity = '0';
   warnBarL.className = 'warning-bar left';
-  warnBarR.className = 'warning-bar right';
+  warnBarR.className  = 'warning-bar right';
   gameContainerEl.style.transform = '';
   if (activeBGM) activeBGM.playbackRate = 1.0;
 }
@@ -968,14 +968,13 @@ function spawnNext() {
   if (collide(current, board)) {
     current = null;
     gameOver = true;
-    // ★ オンライン: ゲームオーバーフラグを送信
     handleGameOver();
     stopBGM();
     gameOverSE.currentTime = 0;
     gameOverSE.play();
     saveHighScore(score);
     renderHighScores();
-    startGameOverAnim();
+    triggerGameEnd('lose');
   }
 }
 
@@ -1621,6 +1620,8 @@ function gameLoop(timestamp) {
           current = null; gameOver = true;
           handleGameOver(); stopBGM();
           gameOverSE.currentTime = 0; gameOverSE.play();
+          saveHighScore(score); renderHighScores();
+          triggerGameEnd('lose');
           return;
         }
       }
@@ -1716,6 +1717,342 @@ function startGameOverAnim() {
   gameOverAnimId = requestAnimationFrame(frame);
 }
 
+// ==== ゲームエンド演出（フルスクリーン版） ====
+const GE_GRAVITY      = 0.4;
+const GE_DEBRIS_DECAY = 0.012;
+const GE_SPRING_K     = 0.08;
+const GE_SPRING_DAMP  = 0.75;
+const GE_SHIVER_MIN   = 0.3;
+const GE_SHIVER_DECAY = 0.995;
+const GE_GLITCH_PROB  = 0.08;
+const GE_WHITEOUT_DEC = 0.025;
+const GE_SCALE_START  = 3.0;
+const GE_CONFETTI_CNT = 80;
+const GE_CONFETTI_G   = 0.1;
+const GE_HALO_RAYS    = 12;
+const GE_ASCENSION_COLORS = ['#FFD700', '#FFF8DC', '#E0E0FF', '#AAFFFF'];
+const GE_CONFETTI_COLORS  = ['#FF4444', '#FFD700', '#44FF44', '#4488FF', '#FF44FF', '#FFFFFF'];
+
+let gameEndAnimId   = null;
+let gameEndResult   = null; // 'lose' | 'win' | null
+let geAnimCanvas    = null;
+let geAnimCtx       = null;
+let geDebris        = [];
+let geAscension     = [];
+let geConfetti      = [];
+let geWhiteoutAlpha = 0;
+let geHaloRot       = 0;
+let geWinProgress   = 0;
+let geWinLanded     = false;
+let geCamShake      = false;
+let geCamShakeTimer = 0;
+let geSettled       = false;
+let pendingResultCb = null;
+let geGameOverText  = null;
+let geWinnerText    = null;
+
+function schedulePendingResult(fn) {
+  if (geSettled) { fn(); }
+  else           { pendingResultCb = fn; }
+}
+
+function triggerGameEnd(result) {
+  cancelAnimationFrame(animId);
+  gameOver      = true;
+  gameEndResult = result;
+  geSettled     = false;
+  pendingResultCb = null;
+  stopFireEffect();
+  cancelAnimationFrame(gameOverAnimId);
+  cancelAnimationFrame(gameEndAnimId);
+  gameEndAnimId = null;
+  geAnimCanvas  = null;
+  geAnimCtx     = null;
+
+  geDebris = []; geAscension = []; geConfetti = [];
+  geCamShake = false; geCamShakeTimer = 0;
+  geWhiteoutAlpha = 0; geHaloRot = 0;
+  geWinProgress = 0; geWinLanded = false;
+  geGameOverText = null; geWinnerText = null;
+
+  // フルスクリーンオーバーレイを準備
+  const animDiv = document.getElementById('gameover-anim');
+  animDiv.innerHTML = '';
+
+  animDiv.style.background = 'transparent';
+  if (result === 'lose') {
+    canvas.style.transition  = 'filter 0.8s ease';
+    canvas.style.filter      = 'grayscale(100%) sepia(30%) hue-rotate(200deg)';
+  } else {
+    canvas.style.filter      = '';
+    canvas.style.transition  = '';
+  }
+  animDiv.classList.remove('hidden');
+
+  // フルスクリーン描画用キャンバスを生成
+  geAnimCanvas        = document.createElement('canvas');
+  geAnimCanvas.width  = window.innerWidth;
+  geAnimCanvas.height = window.innerHeight;
+  geAnimCanvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;background:transparent;';
+  animDiv.appendChild(geAnimCanvas);
+  geAnimCtx = geAnimCanvas.getContext('2d', { alpha: true });
+
+  const SW = geAnimCanvas.width, SH = geAnimCanvas.height;
+  // ボードのスクリーン座標を取得
+  const br = canvas.getBoundingClientRect();
+  const cellW = br.width / COLS, cellH = br.height / ROWS;
+
+  if (result === 'lose') {
+    board.forEach((row, ri) => row.forEach((cell, ci) => {
+      if (!cell) return;
+      geDebris.push({
+        x: br.left + ci * cellW, y: br.top + ri * cellH,
+        vx: (Math.random() - 0.5) * 4,
+        vy: Math.random() * 2 + 1,
+        angle: 0, vAngle: (Math.random() - 0.5) * 0.2,
+        color: COLORS[cell] || '#888', alpha: 1.0, size: cellW,
+      });
+    }));
+    geGameOverText = { y: -120, targetY: SH / 2, vy: 0, x: SW / 2, shiver: 0, arrived: false };
+
+  } else {
+    geWhiteoutAlpha = 1.0;
+    board.forEach((row, ri) => row.forEach((cell, ci) => {
+      if (!cell) return;
+      geAscension.push({
+        x: br.left + (ci + 0.5) * cellW,
+        y: br.top  + ri * cellH,
+        vx: (Math.random() - 0.5) * 2,
+        vy: -(3.0 + Math.random() * 3.0),
+        life: 1.0, size: cellW * 0.7,
+        color: GE_ASCENSION_COLORS[Math.floor(Math.random() * 4)],
+      });
+    }));
+    geWinnerText = { scale: GE_SCALE_START, alpha: 0, landed: false };
+  }
+
+  gameEndAnimId = requestAnimationFrame(gameEndLoop);
+}
+
+function geEaseOutBack(t) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+function gameEndLoop() {
+  if (!geAnimCtx) return;
+  const gc = geAnimCtx;
+  const SW = geAnimCanvas.width, SH = geAnimCanvas.height;
+
+  gc.save();
+  let sx = 0, sy = 0;
+  if (geCamShake) {
+    geCamShakeTimer++;
+    const intensity = Math.max(0, 10 - geCamShakeTimer * 0.25);
+    sx = (Math.random() - 0.5) * intensity * 2;
+    sy = (Math.random() - 0.5) * intensity * 2;
+    if (intensity <= 0) geCamShake = false;
+  }
+  gc.translate(sx, sy);
+  gc.clearRect(-20, -20, SW + 40, SH + 40);
+
+  if (gameEndResult === 'lose') {
+    // 崩壊パーティクル
+    for (let i = geDebris.length - 1; i >= 0; i--) {
+      const p = geDebris[i];
+      p.vy += GE_GRAVITY; p.x += p.vx; p.y += p.vy;
+      p.angle += p.vAngle; p.alpha -= GE_DEBRIS_DECAY;
+      if (p.alpha <= 0 || p.y > SH + 60) { geDebris.splice(i, 1); continue; }
+      gc.save();
+      gc.globalAlpha = p.alpha;
+      gc.translate(p.x + p.size / 2, p.y + p.size / 2);
+      gc.rotate(p.angle);
+      gc.fillStyle = p.color;
+      gc.fillRect(-p.size / 2 + 1, -p.size / 2 + 1, p.size - 2, p.size - 2);
+      gc.fillStyle = 'rgba(255,255,255,0.25)';
+      gc.fillRect(-p.size / 2 + 1, -p.size / 2 + 1, p.size - 2, 3);
+      gc.restore();
+    }
+
+    // GAME OVER テキスト（バネ降下 → シバー → 色収差グリッチ）
+    if (geGameOverText) {
+      const gt = geGameOverText;
+      const dy = gt.targetY - gt.y;
+      gt.vy = gt.vy * GE_SPRING_DAMP + dy * GE_SPRING_K;
+      gt.y += gt.vy;
+
+      if (!gt.arrived && Math.abs(gt.vy) < 0.5 && Math.abs(dy) < 1) {
+        gt.arrived = true;
+        gt.shiver  = 1.5;
+      }
+
+      let ox = 0, oy = 0;
+      if (gt.arrived) {
+        ox = (Math.random() - 0.5) * gt.shiver;
+        oy = (Math.random() - 0.5) * gt.shiver;
+        gt.shiver = Math.max(gt.shiver * GE_SHIVER_DECAY, GE_SHIVER_MIN);
+      }
+
+      const tx = gt.x + ox, ty = gt.y + oy;
+      const fs = Math.min(90, Math.max(48, SW / 10));
+      const sh = Math.random() < GE_GLITCH_PROB ? 5 + Math.random() * 5 : 1;
+
+      gc.font = `bold ${fs}px Arial`;
+      gc.textAlign    = 'center';
+      gc.textBaseline = 'middle';
+      // テキスト背後に暗いグロー（可読性確保）
+      gc.shadowColor = 'rgba(0,0,0,0.9)';
+      gc.shadowBlur  = 30;
+      gc.fillStyle = '#000'; gc.fillText('GAME OVER', tx, ty);
+      gc.shadowBlur = 0; gc.shadowColor = 'transparent';
+      gc.fillStyle = 'rgba(255,0,0,0.6)'; gc.fillText('GAME OVER', tx - sh, ty);
+      gc.fillStyle = 'rgba(0,255,0,0.6)'; gc.fillText('GAME OVER', tx,      ty);
+      gc.fillStyle = 'rgba(0,0,255,0.6)'; gc.fillText('GAME OVER', tx + sh, ty);
+      gc.fillStyle = '#FFFFFF';           gc.fillText('GAME OVER', tx,      ty);
+      gc.textAlign    = 'start';
+      gc.textBaseline = 'alphabetic';
+
+      if (gt.arrived && !geSettled) {
+        geSettled = true;
+        setTimeout(() => {
+          if (!activeOnlineGame) {
+            injectSoloGameEndUI(`スコア: ${score.toLocaleString()}`);
+          }
+          if (pendingResultCb) { pendingResultCb(); pendingResultCb = null; }
+        }, 1500);
+      }
+    }
+
+  } else {
+    // ホワイトアウト
+    if (geWhiteoutAlpha > 0) {
+      gc.fillStyle   = '#FFFFFF';
+      gc.globalAlpha = geWhiteoutAlpha;
+      gc.fillRect(0, 0, SW, SH);
+      gc.globalAlpha = 1.0;
+      geWhiteoutAlpha = Math.max(0, geWhiteoutAlpha - GE_WHITEOUT_DEC);
+    }
+
+    // 昇天パーティクル
+    for (let i = geAscension.length - 1; i >= 0; i--) {
+      const p = geAscension[i];
+      p.x += p.vx; p.y += p.vy; p.life -= 0.007;
+      if (p.life <= 0 || p.y < -60) { geAscension.splice(i, 1); continue; }
+      gc.save();
+      gc.globalAlpha = p.life;
+      gc.fillStyle   = p.color;
+      gc.beginPath();
+      gc.arc(p.x, p.y, p.size / 2, 0, Math.PI * 2);
+      gc.fill();
+      gc.strokeStyle = 'rgba(255,255,255,0.6)';
+      gc.lineWidth   = 0.8;
+      gc.stroke();
+      gc.restore();
+    }
+
+    // 紙吹雪
+    for (let i = geConfetti.length - 1; i >= 0; i--) {
+      const p = geConfetti[i];
+      p.vy += p.gravity; p.x += p.vx; p.y += p.vy;
+      p.angle += p.vAngle;
+      if (p.y > SH * 0.8) p.alpha -= 0.02;
+      if (p.alpha <= 0) { geConfetti.splice(i, 1); continue; }
+      gc.save();
+      gc.globalAlpha = p.alpha;
+      gc.translate(p.x, p.y);
+      gc.rotate(p.angle);
+      gc.fillStyle = p.color;
+      gc.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      gc.restore();
+    }
+
+    // 後光（着地後）
+    if (geWinLanded) {
+      geHaloRot += 0.005;
+      const IR = 100, OR = 280;
+      gc.save();
+      gc.translate(SW / 2, SH / 2);
+      gc.rotate(geHaloRot);
+      for (let i = 0; i < GE_HALO_RAYS; i++) {
+        const a = (Math.PI * 2 / GE_HALO_RAYS) * i;
+        const cos = Math.cos(a), sin = Math.sin(a);
+        const grad = gc.createLinearGradient(cos * IR, sin * IR, cos * OR, sin * OR);
+        grad.addColorStop(0, 'rgba(255,215,0,0.45)');
+        grad.addColorStop(1, 'rgba(255,215,0,0)');
+        gc.beginPath();
+        gc.moveTo(cos * IR, sin * IR);
+        gc.lineTo(cos * OR, sin * OR);
+        gc.strokeStyle = grad;
+        gc.lineWidth   = 14;
+        gc.stroke();
+      }
+      gc.restore();
+    }
+
+    // 1st WINNER テキスト（Back Ease-out ズームイン）
+    if (geWinnerText) {
+      geWinProgress = Math.min(geWinProgress + 0.016, 1.0);
+      const t = geEaseOutBack(geWinProgress);
+      geWinnerText.scale = GE_SCALE_START - (GE_SCALE_START - 1.0) * t;
+      geWinnerText.alpha = Math.min(geWinProgress * 3, 1.0);
+
+      if (!geWinnerText.landed && geWinnerText.scale <= 1.05) {
+        geWinnerText.landed = true;
+        geWinLanded         = true;
+        geCamShake          = true;
+        geCamShakeTimer     = 0;
+        // 紙吹雪を左右から発射
+        for (let i = 0; i < GE_CONFETTI_CNT; i++) {
+          const left = Math.random() < 0.5;
+          geConfetti.push({
+            x: left ? 0 : SW, y: Math.random() * SH * 0.5,
+            vx: left ? 2 + Math.random() * 5 : -(2 + Math.random() * 5),
+            vy: Math.random() * 2 - 1, gravity: GE_CONFETTI_G,
+            color: GE_CONFETTI_COLORS[Math.floor(Math.random() * 6)],
+            w: 5 + Math.random() * 5, h: 9 + Math.random() * 7,
+            angle: Math.random() * Math.PI * 2, vAngle: (Math.random() - 0.5) * 0.22,
+            alpha: 1.0,
+          });
+        }
+        if (!geSettled) {
+          geSettled = true;
+          setTimeout(() => {
+            if (pendingResultCb) { pendingResultCb(); pendingResultCb = null; }
+          }, 2500);
+        }
+      }
+
+      const fs = Math.min(96, Math.max(56, SW / 8));
+      gc.save();
+      gc.globalAlpha = geWinnerText.alpha;
+      gc.translate(SW / 2, SH / 2);
+      gc.scale(geWinnerText.scale, geWinnerText.scale);
+      gc.font = `bold ${fs}px Arial`;
+      gc.textAlign    = 'center';
+      gc.textBaseline = 'middle';
+      // 背後グロー（背景透明でも読みやすく）
+      gc.shadowColor = 'rgba(0,0,0,0.95)';
+      gc.shadowBlur  = 35;
+      gc.fillStyle = '#000'; gc.fillText('1st WINNER', 0, 0);
+      gc.shadowBlur = 0; gc.shadowColor = 'transparent';
+      // 影
+      gc.fillStyle = 'rgba(0,0,0,0.6)';
+      gc.fillText('1st WINNER', 3, 3);
+      // 金グラデ本体
+      const grd = gc.createLinearGradient(-120, -fs / 2, 120, fs / 2);
+      grd.addColorStop(0,   '#FFD700');
+      grd.addColorStop(0.5, '#FFFFFF');
+      grd.addColorStop(1,   '#FFD700');
+      gc.fillStyle = grd;
+      gc.fillText('1st WINNER', 0, 0);
+      gc.restore();
+    }
+  }
+
+  gc.restore();
+  gameEndAnimId = requestAnimationFrame(gameEndLoop);
+}
+
 function startGame(initialLevel = 1) {
   lastLevel = initialLevel;
   board = createBoard();
@@ -1744,6 +2081,7 @@ function startGame(initialLevel = 1) {
   windEffects = [];
   sparkleEffects = [];
   if (previewCanvas) previewCanvas.style.display = IS_ONLINE ? 'block' : 'none';
+  if (!IS_ONLINE) document.getElementById('opponent-col').classList.add('hidden');
   resetDangerEffects();
   drawGarbagePreview();
   next = createPiece(randomType());
@@ -1754,6 +2092,13 @@ function startGame(initialLevel = 1) {
   gameOverSE.currentTime = 0;
   cancelAnimationFrame(gameOverAnimId);
   document.getElementById('gameover-anim').classList.add('hidden');
+  cancelAnimationFrame(gameEndAnimId);
+  gameEndAnimId = null;
+  gameEndResult = null;
+  geSettled = false;
+  pendingResultCb = null;
+  canvas.style.filter = '';
+  canvas.style.transition = '';
   cancelAnimationFrame(animId);
   animId = requestAnimationFrame(gameLoop);
   startFireEffect();
@@ -2029,6 +2374,19 @@ function showDifficulty(onSelect) {
 
 // ===== カウントダウン =====
 function startCountdown(onComplete) {
+  // 前ゲームの演出・フィルター・危険度エフェクトを即クリア
+  cancelAnimationFrame(gameEndAnimId);
+  gameEndAnimId = null;
+  geAnimCanvas = null; geAnimCtx = null;
+  canvas.style.filter = '';
+  canvas.style.transition = '';
+  document.getElementById('gameover-anim').classList.add('hidden');
+  const oldUi = document.getElementById('ge-ui');
+  if (oldUi) oldUi.remove();
+  resetDangerEffects();
+  if (previewCanvas) previewCanvas.style.display = 'none';
+  document.getElementById('opponent-col').classList.add('hidden');
+
   // 前のゲームのボードを消去してクリーンな状態で表示
   board = createBoard();
   current = null;
@@ -2406,12 +2764,24 @@ function watchGameState() {
         listenOpponentBoard();
       });
     } else if (state === 'result' && prevState !== 'result') {
-      showOnlineResultFromDB();
+      schedulePendingResult(() => showOnlineResultFromDB());
     }
   });
 }
 
 function startOnlineCountdown(callback) {
+  // 前ゲームの演出・フィルター・危険度エフェクトを即クリア
+  cancelAnimationFrame(gameEndAnimId);
+  gameEndAnimId = null;
+  geAnimCanvas = null; geAnimCtx = null;
+  canvas.style.filter = '';
+  canvas.style.transition = '';
+  document.getElementById('gameover-anim').classList.add('hidden');
+  const oldUi = document.getElementById('ge-ui');
+  if (oldUi) oldUi.remove();
+  resetDangerEffects();
+  if (previewCanvas) previewCanvas.style.display = 'block';
+
   showPage('game');
   document.getElementById('opponent-col').classList.remove('hidden');
   board = createBoard(); current = null; next = null; hold = null; draw();
@@ -2503,7 +2873,10 @@ function handleGameOver() {
 function watchOpponentGameOver() {
   const opRole = myRole === 'player1' ? 'player2' : 'player1';
   window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/isGameOver`), snap => {
-    if (snap.val() === true && !gameOver) {
+    // 自分以外が全員ゲームオーバー → 1st WINNER
+    if (snap.val() === true && !gameOver && !gameEndResult) {
+      stopBGM();
+      triggerGameEnd('win');
       currentWins++;
       window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/wins`), currentWins);
       window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'result');
@@ -2512,46 +2885,156 @@ function watchOpponentGameOver() {
 }
 
 // ---- リザルト ----
+
+// ゲームエンドアニメ上にボタンを注入（ソロ用）
+function injectSoloGameEndUI(scoreText) {
+  const animDiv = document.getElementById('gameover-anim');
+  const old = document.getElementById('ge-ui');
+  if (old) old.remove();
+
+  const ui = document.createElement('div');
+  ui.id = 'ge-ui';
+  ui.style.cssText = 'position:absolute;top:62%;left:50%;transform:translateX(-50%);text-align:center;color:#fff;font-family:Arial,sans-serif;z-index:10;white-space:nowrap;background:rgba(0,0,0,0.55);border-radius:12px;padding:24px 40px;backdrop-filter:blur(4px);';
+
+  const scoreEl = document.createElement('p');
+  scoreEl.textContent = scoreText;
+  scoreEl.style.cssText = 'font-size:20px;margin:0 0 20px;text-shadow:0 2px 8px rgba(0,0,0,0.9);';
+  ui.appendChild(scoreEl);
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:18px;justify-content:center;';
+
+  function cleanupAnim() {
+    cancelAnimationFrame(gameEndAnimId);
+    gameEndAnimId = null;
+    geAnimCanvas = null; geAnimCtx = null;
+    canvas.style.filter = '';
+    canvas.style.transition = '';
+    document.getElementById('gameover-anim').classList.add('hidden');
+    const ui2 = document.getElementById('ge-ui');
+    if (ui2) ui2.remove();
+  }
+
+  const retryBtn = document.createElement('button');
+  retryBtn.textContent = 'もう一度';
+  retryBtn.style.cssText = 'padding:12px 36px;font-size:17px;background:#e94560;color:#fff;border:none;border-radius:4px;cursor:pointer;letter-spacing:1px;';
+  retryBtn.onmouseover = () => retryBtn.style.background = '#c73652';
+  retryBtn.onmouseout  = () => retryBtn.style.background = '#e94560';
+  retryBtn.onclick = () => { cleanupAnim(); startCountdown(() => startGame(lastLevel)); };
+  btnRow.appendChild(retryBtn);
+
+  const homeBtn = document.createElement('button');
+  homeBtn.textContent = 'タイトルへ';
+  homeBtn.style.cssText = 'padding:10px 28px;font-size:14px;background:transparent;color:#ccc;border:1px solid #666;border-radius:4px;cursor:pointer;letter-spacing:1px;';
+  homeBtn.onmouseover = () => { homeBtn.style.color='#fff'; homeBtn.style.borderColor='#999'; };
+  homeBtn.onmouseout  = () => { homeBtn.style.color='#ccc'; homeBtn.style.borderColor='#666'; };
+  homeBtn.onclick = () => { cleanupAnim(); goToTitle(); };
+  btnRow.appendChild(homeBtn);
+
+  ui.appendChild(btnRow);
+  animDiv.appendChild(ui);
+}
+
+// ゲームエンドアニメ上にボタンを注入（対戦用）
+function injectGameEndUI(winsText, roundText, showRematch) {
+  const animDiv = document.getElementById('gameover-anim');
+  const old = document.getElementById('ge-ui');
+  if (old) old.remove();
+
+  const ui = document.createElement('div');
+  ui.id = 'ge-ui';
+  ui.style.cssText = 'position:absolute;top:62%;left:50%;transform:translateX(-50%);text-align:center;color:#fff;font-family:Arial,sans-serif;z-index:10;white-space:nowrap;background:rgba(0,0,0,0.55);border-radius:12px;padding:24px 40px;backdrop-filter:blur(4px);';
+
+  if (winsText) {
+    const el = document.createElement('p');
+    el.textContent = winsText;
+    el.style.cssText = 'font-size:22px;margin:0 0 8px;font-weight:bold;text-shadow:0 2px 8px rgba(0,0,0,0.9);';
+    ui.appendChild(el);
+  }
+  if (roundText) {
+    const el = document.createElement('p');
+    el.textContent = roundText;
+    el.style.cssText = 'font-size:15px;margin:0 0 6px;color:#ddd;text-shadow:0 1px 4px rgba(0,0,0,0.8);';
+    ui.appendChild(el);
+  }
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:18px;justify-content:center;margin-top:22px;';
+
+  function cleanupAnim() {
+    cancelAnimationFrame(gameEndAnimId);
+    gameEndAnimId = null;
+    geAnimCanvas = null; geAnimCtx = null;
+    canvas.style.filter = '';
+    canvas.style.transition = '';
+    document.getElementById('gameover-anim').classList.add('hidden');
+    const ui2 = document.getElementById('ge-ui');
+    if (ui2) ui2.remove();
+  }
+
+  if (showRematch) {
+    const btn = document.createElement('button');
+    btn.textContent = '再戦';
+    btn.style.cssText = 'padding:12px 36px;font-size:17px;background:#e94560;color:#fff;border:none;border-radius:4px;cursor:pointer;letter-spacing:1px;';
+    btn.onmouseover = () => btn.style.background = '#c73652';
+    btn.onmouseout  = () => btn.style.background = '#e94560';
+    btn.onclick = () => { cleanupAnim(); rematch(); };
+    btnRow.appendChild(btn);
+  }
+
+  const homeBtn = document.createElement('button');
+  homeBtn.textContent = 'タイトルへ';
+  homeBtn.style.cssText = 'padding:10px 28px;font-size:14px;background:transparent;color:#ccc;border:1px solid #666;border-radius:4px;cursor:pointer;letter-spacing:1px;';
+  homeBtn.onmouseover = () => { homeBtn.style.color='#fff'; homeBtn.style.borderColor='#999'; };
+  homeBtn.onmouseout  = () => { homeBtn.style.color='#ccc'; homeBtn.style.borderColor='#666'; };
+  homeBtn.onclick = () => { cleanupAnim(); cleanupRoom(); goToTitle(); };
+  btnRow.appendChild(homeBtn);
+
+  ui.appendChild(btnRow);
+  animDiv.appendChild(ui);
+}
+
 function showOnlineResultFromDB() {
   window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
     const data = snap.val();
     if (!data) return;
-    const p1Wins     = data.player1?.wins ?? 0;
-    const p2Wins     = data.player2?.wins ?? 0;
-    const matchMode  = data.config?.matchMode   ?? 'wins';
+    const p1Wins      = data.player1?.wins ?? 0;
+    const p2Wins      = data.player2?.wins ?? 0;
+    const matchMode   = data.config?.matchMode   ?? 'wins';
     const matchTarget = data.config?.matchTarget ?? 3;
-    const p1Name     = data.player1?.name ?? 'Player1';
-    const p2Name     = data.player2?.name ?? 'Player2';
-    const myWins     = myRole === 'player1' ? p1Wins : p2Wins;
-    const opWins     = myRole === 'player1' ? p2Wins : p1Wins;
-    const winsText   = `${p1Name} ${p1Wins}勝 ー ${p2Name} ${p2Wins}勝`;
+    const p1Name      = data.player1?.name ?? 'Player1';
+    const p2Name      = data.player2?.name ?? 'Player2';
+    const myWins      = myRole === 'player1' ? p1Wins : p2Wins;
+    const opWins      = myRole === 'player1' ? p2Wins : p1Wins;
+    const winsText    = `${p1Name} ${p1Wins}勝 ー ${p2Name} ${p2Wins}勝`;
     stopBGM();
+
     if (matchMode === 'rounds') {
       const totalRounds = p1Wins + p2Wins;
       if (totalRounds >= matchTarget) {
-        // 全ラウンド終了 → 勝利数比較
-        let title;
-        if      (myWins > opWins) title = 'YOU WIN!';
-        else if (myWins < opWins) title = 'YOU LOSE';
-        else                      title = 'DRAW';
-        showOnlineResult(title, 'マッチ終了', false, winsText, `全${matchTarget}ラウンド終了`);
+        let matchResult = myWins > opWins ? '勝利！' : myWins < opWins ? '敗北' : '引き分け';
+        injectGameEndUI(winsText, `全${matchTarget}ラウンド終了 ─ ${matchResult}`, false);
       } else {
-        const roundText = `第${totalRounds + 1} / 全${matchTarget}ラウンド`;
-        showOnlineResult(!gameOver ? 'ROUND WIN' : 'ROUND LOSE', '次のラウンドへ', true, winsText, roundText);
+        injectGameEndUI(winsText, `第${totalRounds + 1} / 全${matchTarget}ラウンド`, true);
       }
     } else {
-      // 先取モード
       if (p1Wins >= matchTarget || p2Wins >= matchTarget) {
-        showOnlineResult(myWins >= matchTarget ? 'YOU WIN!' : 'YOU LOSE', 'マッチ終了', false, winsText);
+        injectGameEndUI(winsText, myWins >= matchTarget ? 'マッチ勝利！' : 'マッチ敗北', false);
       } else {
-        showOnlineResult(!gameOver ? 'ROUND WIN' : 'ROUND LOSE', '次のラウンドへ', true, winsText);
+        injectGameEndUI(winsText, null, true);
       }
     }
   }, { onlyOnce: true });
 }
 
+// 切断など特殊ケース用（#online-result を使う）
 function showOnlineResult(title, msg, showRematch, winsText, roundText) {
   cancelAnimationFrame(animId);
+  cancelAnimationFrame(gameEndAnimId);
+  gameEndAnimId = null;
+  geAnimCanvas = null; geAnimCtx = null;
+  canvas.style.filter = '';
+  canvas.style.transition = '';
   document.getElementById('gameover-anim').classList.add('hidden');
   document.getElementById('online-result-title').textContent  = title;
   document.getElementById('online-result-msg').textContent    = msg;
@@ -2598,6 +3081,8 @@ function cleanupRoom() {
     window._remove(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`));
   }
   myRole = null;
+  IS_ONLINE = false;
+  ROOM_ID   = null;
 }
 
 // ---- 部屋作成パネル ----

@@ -1841,6 +1841,19 @@ function geEaseOutBack(t) {
 
 function gameEndLoop() {
   if (!geAnimCtx) return;
+
+  // フルスクリーン切替などによるリサイズに追従
+  const newW = window.innerWidth, newH = window.innerHeight;
+  if (geAnimCanvas.width !== newW || geAnimCanvas.height !== newH) {
+    geAnimCanvas.width  = newW;
+    geAnimCanvas.height = newH;
+    if (geGameOverText) {
+      geGameOverText.x       = newW / 2;
+      geGameOverText.targetY = newH / 2;
+      if (geGameOverText.arrived) geGameOverText.y = newH / 2;
+    }
+  }
+
   const gc = geAnimCtx;
   const SW = geAnimCanvas.width, SH = geAnimCanvas.height;
 

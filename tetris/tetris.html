@@ -9,7 +9,7 @@
 <!-- Firebase 初期化 -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-app.js";
-  import { getDatabase, ref, set, onValue, update, remove, runTransaction, push, onDisconnect } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-database.js";
+  import { getDatabase, ref, set, get, onValue, update, remove, runTransaction, push, onDisconnect } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-database.js";
   import { firebaseConfig } from "./firebase-config.js";
 
   const app = initializeApp(firebaseConfig);
@@ -19,6 +19,7 @@
   window._db             = db;
   window._ref            = ref;
   window._set            = set;
+  window._get            = get;
   window._onValue        = onValue;
   window._update         = update;
   window._remove         = remove;
@@ -157,14 +158,22 @@
     <div class="warning-bar left"  id="warn-bar-left"></div>
     <div class="warning-bar right" id="warn-bar-right"></div>
     <div id="left-col">
-      <div class="panel-box" id="hold-panel">
-        <h3>HOLD</h3>
-        <canvas id="hold-canvas" width="300" height="80"></canvas>
+      <div id="hold-row">
+        <div id="my-name-panel" class="hidden">
+          <span id="my-name-text">Player</span>
+        </div>
+        <div class="panel-box" id="hold-panel">
+          <h3>HOLD</h3>
+          <canvas id="hold-canvas" width="300" height="80"></canvas>
+        </div>
       </div>
       <div id="board-area">
         <div id="board-column">
           <canvas id="preview-canvas" width="300" height="120"></canvas>
-          <canvas id="board" width="300" height="600"></canvas>
+          <div id="board-row">
+            <canvas id="gauge-canvas" width="18" height="600"></canvas>
+            <canvas id="board" width="300" height="600"></canvas>
+          </div>
         </div>
       </div>
     </div>
@@ -177,11 +186,11 @@
         <h3>スコア</h3>
         <div class="value" id="score-display">0</div>
       </div>
-      <div class="panel-box">
+      <div class="panel-box" id="level-panel">
         <h3>レベル</h3>
         <div class="value" id="level-display">1</div>
       </div>
-      <div class="panel-box">
+      <div class="panel-box" id="lines-panel">
         <h3>ライン</h3>
         <div class="value" id="lines-display">0</div>
       </div>
@@ -192,7 +201,7 @@
         <span data-kb="down">↓</span> 低速落下<br>
         <span data-kb="hardDrop">Space</span> 即落下<br>
         <span data-kb="hold">C</span> ホールド<br>
-        <span data-kb="pause">P</span> 一時停止
+        <span id="pause-control-line"><span data-kb="pause">P</span> 一時停止</span>
       </div>
       <button id="game-keybind-btn">⚙ キー設定</button>
       <button id="home-btn">← ホーム</button>
@@ -204,7 +213,7 @@
         <h3 id="opponent-label">OPPONENT</h3>
         <div class="value" style="font-size:16px;" id="opponent-score-display">0</div>
       </div>
-      <canvas id="opponent-board" width="150" height="300"></canvas>
+      <canvas id="opponent-board" width="300" height="600"></canvas>
       <div class="panel-box" style="margin-top:8px;">
         <h3>相手スコア</h3>
         <div class="value" style="font-size:16px;" id="opponent-score-display2">0</div>
@@ -488,7 +497,26 @@ let opUnsubs = []; // Firebase監視の解除関数
 
 const opCanvas = document.getElementById('opponent-board');
 const opCtx    = opCanvas ? opCanvas.getContext('2d') : null;
-const OP_CELL  = 15; // 相手フィールドのセルサイズ（自分の半分）
+const OP_CELL  = 30;
+
+const gaugeCanvas = document.getElementById('gauge-canvas');
+const gaugeCtx    = gaugeCanvas ? gaugeCanvas.getContext('2d') : null;
+const MAX_GAUGE_LINES     = 20;
+const GAUGE_W             = Math.round(CELL * 0.6); // 18px
+const GAUGE_TOTAL_HEIGHT  = CELL * ROWS;            // 600px
+const GAUGE_DISPLAY_SPEED = 0.15;
+const BLINK_THRESHOLD     = 0.5;
+const BLINK_INTERVAL      = 10;
+const SPARK_COUNT_PER_LINE = 3;
+
+const attackGauge = {
+  totalLines:    0,
+  displayHeight: 0,
+  targetHeight:  0,
+  color:         '#FFD700',
+  isBlinking:    false,
+  blinkTimer:    0,
+};
 // ====== /オンライン対戦 ======
 
 const buttonSE    = new Audio('music/button.mp3');
@@ -503,14 +531,15 @@ winResultBGM.loop   = true;
 const loseResultBGM = new Audio('music/Console Rainfall.mp3');
 loseResultBGM.loop  = true;
 
+const resultBGMs = [winResultBGM, loseResultBGM];
 let _resultFadeTimer = null;
 function playResultBGM(audio) {
   clearInterval(_resultFadeTimer);
-  [winResultBGM, loseResultBGM].forEach(a => { a.pause(); a.currentTime = 0; a.volume = 0; });
+  resultBGMs.forEach(a => { a.pause(); a.currentTime = 0; a.volume = 0; });
   audio.volume = 0;
   audio.play().catch(() => {});
   const target = 0.6;
-  const step   = target / 40; // 2s で target に到達（50ms × 40回）
+  const step   = target / 40;
   _resultFadeTimer = setInterval(() => {
     audio.volume = Math.min(audio.volume + step, target);
     if (audio.volume >= target) clearInterval(_resultFadeTimer);
@@ -518,7 +547,7 @@ function playResultBGM(audio) {
 }
 function stopResultBGM() {
   clearInterval(_resultFadeTimer);
-  [winResultBGM, loseResultBGM].forEach(a => { a.pause(); a.currentTime = 0; a.volume = 0; });
+  resultBGMs.forEach(a => { a.pause(); a.currentTime = 0; a.volume = 0; });
 }
 const fallSE      = new Audio('music/block/fall.mp3');
 
@@ -708,7 +737,7 @@ function computeGarbageIcons(total) {
 }
 
 function drawGarbagePreview() {
-  if (!pctx) return;
+  if (!pctx || IS_ONLINE) return;
   const W = previewCanvas.width;
   const H = previewCanvas.height;
   pctx.clearRect(0, 0, W, H);
@@ -828,7 +857,108 @@ function drawGarbagePreview() {
   }
 }
 
-function updateAttackGauge() { drawGarbagePreview(); }
+function calcGaugeHeight(lines) {
+  return GAUGE_TOTAL_HEIGHT * Math.min(lines / MAX_GAUGE_LINES, 1.0);
+}
+function getGaugeColor(timer) {
+  return timer > 1.0 ? '#FFD700' : '#FF3333';
+}
+function updateGaugeState(timer) {
+  attackGauge.color      = getGaugeColor(timer);
+  attackGauge.isBlinking = timer < BLINK_THRESHOLD && attackGauge.totalLines > 0;
+}
+function updateGaugeDisplay() {
+  attackGauge.displayHeight +=
+    (attackGauge.targetHeight - attackGauge.displayHeight) * GAUGE_DISPLAY_SPEED;
+}
+function drawGaugeSegments(gctx) {
+  gctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  gctx.lineWidth   = 2;
+  [5, 10, 15].forEach(line => {
+    const y = GAUGE_TOTAL_HEIGHT * (1 - line / MAX_GAUGE_LINES);
+    gctx.beginPath();
+    gctx.moveTo(0, y);
+    gctx.lineTo(GAUGE_W, y);
+    gctx.stroke();
+  });
+}
+function drawAttackGauge() {
+  if (!gaugeCtx) return;
+  const gctx = gaugeCtx;
+  gctx.clearRect(0, 0, GAUGE_W, GAUGE_TOTAL_HEIGHT);
+
+  const { displayHeight, color, isBlinking } = attackGauge;
+
+  if (isBlinking) {
+    attackGauge.blinkTimer++;
+    if (attackGauge.blinkTimer % BLINK_INTERVAL < 5) {
+      gctx.fillStyle = 'rgba(255,255,255,0.08)';
+      gctx.fillRect(0, 0, GAUGE_W, GAUGE_TOTAL_HEIGHT);
+      drawGaugeSegments(gctx);
+      return;
+    }
+  }
+
+  gctx.fillStyle = 'rgba(255,255,255,0.08)';
+  gctx.fillRect(0, 0, GAUGE_W, GAUGE_TOTAL_HEIGHT);
+
+  if (displayHeight > 0) {
+    const fillY = GAUGE_TOTAL_HEIGHT - displayHeight;
+    if (color === '#FF3333') {
+      gctx.shadowBlur  = 12;
+      gctx.shadowColor = '#FF3333';
+    }
+    gctx.fillStyle = color;
+    gctx.fillRect(0, fillY, GAUGE_W, displayHeight);
+    gctx.shadowBlur = 0;
+
+    if (attackGauge.totalLines > 0) {
+      gctx.fillStyle    = '#FFFFFF';
+      gctx.font         = 'bold 11px Arial';
+      gctx.textAlign    = 'center';
+      gctx.textBaseline = 'middle';
+      gctx.fillText(attackGauge.totalLines, GAUGE_W / 2, fillY - 8);
+      gctx.textBaseline = 'alphabetic';
+      gctx.textAlign    = 'left';
+    }
+  }
+
+  drawGaugeSegments(gctx);
+}
+function onGaugeReduced(prevLines, newLines) {
+  const reducedLines = prevLines - newLines;
+  if (reducedLines <= 0) return;
+  const gaugeTopY = GAUGE_TOTAL_HEIGHT - attackGauge.displayHeight;
+  for (let i = 0; i < reducedLines * SPARK_COUNT_PER_LINE; i++) {
+    sparkleEffects.push({
+      x: 0, y: gaugeTopY,
+      vx: (Math.random() - 0.5) * 3,
+      vy: -(1.0 + Math.random() * 2.0),
+      life: 1.0, size: 2 + Math.random() * 2,
+      color: '#FFD700', elapsed: 0,
+    });
+  }
+  attackGauge.targetHeight = calcGaugeHeight(newLines);
+  attackGauge.color        = '#FFD700';
+  attackGauge.isBlinking   = false;
+}
+function resetAttackGauge() {
+  attackGauge.totalLines    = 0;
+  attackGauge.displayHeight = 0;
+  attackGauge.targetHeight  = 0;
+  attackGauge.color         = '#FFD700';
+  attackGauge.isBlinking    = false;
+  attackGauge.blinkTimer    = 0;
+}
+function updateAttackGauge() {
+  if (IS_ONLINE) {
+    updateGaugeDisplay();
+    updateGaugeState(attackTimer);
+    drawAttackGauge();
+  } else {
+    drawGarbagePreview();
+  }
+}
 
 // ===== 危険度演出システム =====
 const vignetteEl  = document.getElementById('vignette');
@@ -856,7 +986,7 @@ function onDangerLevelChange(prevLevel, nextLevel) {
   warnBarL.className = 'warning-bar left'  + warnCls;
   warnBarR.className = 'warning-bar right' + warnCls;
   // BGMテンポ
-  const tempo = nextLevel >= 3 ? 1.5 : nextLevel >= 1 ? 1.2 : 1.0;
+  const tempo = nextLevel >= 3 ? 1.5 : nextLevel >= 2 ? 1.2 : 1.0;
   if (activeBGM) activeBGM.playbackRate = tempo;
   // シェイクリセット
   if (nextLevel < 3) {
@@ -977,10 +1107,13 @@ function clearLines() {
       attack += REN_BONUS_TABLE[Math.min(renCount, 6)]; // RENボーナス
       // 相殺処理
       const cancel = Math.min(attack, localPending);
+      const prevPending = localPending;
       localPending -= cancel;
       attack -= cancel;
-      // ライン消去で猶予タイマーをリセット
+      if (cancel > 0) onGaugeReduced(prevPending, localPending);
       attackTimer = ATTACK_TIMER_MAX;
+      attackGauge.totalLines  = localPending;
+      attackGauge.targetHeight = calcGaugeHeight(localPending);
       if (attack > 0) {
         const opRole = myRole === 'player1' ? 'player2' : 'player1';
         window._runTransaction(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/pendingAttack`),
@@ -1176,6 +1309,8 @@ function applyPendingGarbage() {
   garbageRiseAnim = { rows: count, hole, startTime: performance.now() };
   localPending = 0;
   attackTimer = 0;
+  attackGauge.totalLines   = 0;
+  attackGauge.targetHeight = 0;
   if (myRole && window._db) {
     window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/pendingAttack`), 0);
   }
@@ -1291,9 +1426,13 @@ function lockPiece() {
       if (isTSpin) attack += cleared * 2;
       attack += REN_BONUS_TABLE[Math.min(renCount, 6)];
       const cancel = Math.min(attack, localPending);
+      const prevPending2 = localPending;
       localPending -= cancel;
       attack -= cancel;
+      if (cancel > 0) onGaugeReduced(prevPending2, localPending);
       attackTimer = ATTACK_TIMER_MAX;
+      attackGauge.totalLines   = localPending;
+      attackGauge.targetHeight = calcGaugeHeight(localPending);
       if (attack > 0) {
         const opRole = myRole === 'player1' ? 'player2' : 'player1';
         window._runTransaction(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/pendingAttack`),
@@ -1313,7 +1452,6 @@ function lockPiece() {
 
   } else {
     renCount = 0;
-    if (IS_ONLINE) applyPendingGarbage();
     spawnNext();
     if (IS_ONLINE && myRole && window._db) {
       window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
@@ -1694,7 +1832,7 @@ function gameLoop(timestamp) {
     updateClearEffects(dt);
     draw();
     updateDropEffects(ctx, dt);
-    drawGarbagePreview();
+    updateAttackGauge();
     updateDangerEffects(timestamp, dt);
     if (!gameOver) animId = requestAnimationFrame(gameLoop);
     return;
@@ -1745,7 +1883,7 @@ function gameLoop(timestamp) {
 
   draw();
   updateDropEffects(ctx, dt);
-  drawGarbagePreview();
+  updateAttackGauge();
   updateDangerEffects(timestamp, dt);
   if (!gameOver) animId = requestAnimationFrame(gameLoop);
 }
@@ -2191,8 +2329,9 @@ function startGame(initialLevel = 1) {
   flashCells.length = 0;
   windEffects = [];
   sparkleEffects = [];
-  if (previewCanvas) previewCanvas.style.display = IS_ONLINE ? 'block' : 'none';
+  if (previewCanvas) previewCanvas.style.display = 'none';
   if (!IS_ONLINE) document.getElementById('opponent-col').classList.add('hidden');
+  resetAttackGauge();
   resetDangerEffects();
   drawGarbagePreview();
   next = createPiece(randomType());
@@ -2273,6 +2412,41 @@ function renderHighScores() {
 }
 // ====== /ハイスコア ======
 
+// ====== オンライン対戦レイアウト ======
+function resetOnlineLayout() {
+  document.getElementById('level-panel').style.display = '';
+  document.getElementById('lines-panel').style.display = '';
+  document.getElementById('pause-control-line').style.display = '';
+  document.getElementById('game-keybind-btn').style.display = '';
+  document.getElementById('home-btn').style.display = '';
+  document.getElementById('my-name-panel').classList.add('hidden');
+  if (gaugeCanvas) gaugeCanvas.style.display = 'none';
+  document.getElementById('left-col').style.order = '';
+  document.getElementById('side-panel').style.order = '';
+  document.getElementById('opponent-col').style.order = '';
+}
+function applyOnlineLayout() {
+  document.getElementById('level-panel').style.display = 'none';
+  document.getElementById('lines-panel').style.display = 'none';
+  document.getElementById('pause-control-line').style.display = 'none';
+  document.getElementById('game-keybind-btn').style.display = 'none';
+  document.getElementById('home-btn').style.display = 'none';
+  document.getElementById('my-name-panel').classList.remove('hidden');
+  if (gaugeCanvas) gaugeCanvas.style.display = 'block';
+
+  if (myRole === 'player2') {
+    document.getElementById('opponent-col').style.order = '1';
+    document.getElementById('left-col').style.order = '2';
+    document.getElementById('side-panel').style.order = '3';
+  }
+
+  const opRole = myRole === 'player1' ? 'player2' : 'player1';
+  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
+    const data = snap.val() || {};
+    document.getElementById('my-name-text').textContent = data[myRole]?.name || myNickname;
+    document.getElementById('opponent-label').textContent = data[opRole]?.name || 'OPPONENT';
+  }, { onlyOnce: true });
+}
 // ====== BGM ======
 const homeBGM = new Audio('music/home.mp3');
 homeBGM.loop = true;
@@ -2282,7 +2456,7 @@ const GAME_BGM_FILES = [
   'music/play/Circuit Psalms.mp3',
   'music/play/Copper Circuit.mp3',
   'music/play/Crystal Firewall.mp3',
-  'music/play/Cyber Tetris (2).mp3',
+  'music/play/Cyber Tetris.mp3',
   'music/play/Hyperpolaroid.mp3',
 ];
 const gameBGMs = GAME_BGM_FILES.map(src => {
@@ -2455,6 +2629,9 @@ function showPage(name) {
 }
 
 function goToTitle() {
+  if (IS_ONLINE) cleanupRoom();
+  resetOnlineLayout();
+  document.getElementById('online-status').textContent = '';
   hideOverlay();
   document.getElementById('online-result').classList.add('hidden');
   document.getElementById('opponent-col').classList.add('hidden');
@@ -2505,6 +2682,7 @@ function startCountdown(onComplete) {
   document.getElementById('opponent-col').classList.add('hidden');
 
   // 前のゲームのボードを消去してクリーンな状態で表示
+  paused = false;
   board = createBoard();
   current = null;
   next = null;
@@ -2680,6 +2858,7 @@ let currentWins = 0;
 let onlineGameState = null;
 let gameStateUnsub = null;
 let bothReadyUnsub = null;
+let waitingScreenUnsub = null;
 
 function makePlayerData(nickname) {
   return { name: nickname || 'Player', uuid: myUUID, ready: false, board: null, score: 0, wins: 0, isGameOver: false };
@@ -2703,28 +2882,26 @@ function joinRoom(nickname) {
   if (statusEl) statusEl.textContent = '接続中...';
 
   const roomRef = window._ref(window._db, `rooms/${ROOM_ID}`);
-  const unsub = window._onValue(roomRef, snap => {
-    unsub(); // 一回だけ読む
+  window._get(roomRef).then(snap => {
     const data = snap.val();
 
-    // --- 再接続チェック ---
-    if (data?.player1?.uuid === myUUID) {
-      myRole = 'player1';
-    } else if (data?.player2?.uuid === myUUID) {
-      myRole = 'player2';
-    } else if (IS_HOST) {
-      // 部屋を作る → player1として入室
-      if (data?.player1?.uuid) {
+    if (IS_HOST) {
+      // 部屋を作る → 常に新規作成（古いデータを上書き）
+      // 自分以外のUUIDがすでにホストなら弾く
+      if (data?.player1?.uuid && data.player1.uuid !== myUUID) {
         if (statusEl) statusEl.textContent = 'このルームIDは既に使用されています';
         return;
       }
       myRole = 'player1';
       const initMode   = _pendingMatchMode;
       const initTarget = _pendingMatchTarget;
-      window._update(window._ref(window._db, `rooms/${ROOM_ID}`), {
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}`), {
         config:  { matchMode: initMode, matchTarget: initTarget, gameState: 'waiting' },
         player1: makePlayerData(nickname),
       });
+    } else if (data?.player2?.uuid === myUUID) {
+      // player2 として再接続
+      myRole = 'player2';
     } else {
       // 部屋に参加する → player2として入室
       if (!data?.player1?.uuid) {
@@ -2744,7 +2921,7 @@ function joinRoom(nickname) {
     initWaitingScreen();
     watchGameState();
     watchBothReady();
-  }, err => {
+  }).catch(err => {
     console.error('joinRoom error:', err);
     if (statusEl) statusEl.textContent = '接続エラー: ' + err.message;
   });
@@ -2783,7 +2960,8 @@ function initWaitingScreen() {
   document.getElementById('ready-btn').disabled = true;
   document.getElementById('waiting-status').textContent = '';
   setupMatchSettings();
-  window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
+  if (waitingScreenUnsub) { waitingScreenUnsub(); waitingScreenUnsub = null; }
+  waitingScreenUnsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
     const data = snap.val() || {};
     updatePlayerSlot('p1', data.player1);
     updatePlayerSlot('p2', data.player2);
@@ -2899,8 +3077,8 @@ function startOnlineCountdown(callback) {
   if (oldUi) oldUi.remove();
   garbageRiseAnim = null;
   resetDangerEffects();
-  if (previewCanvas) previewCanvas.style.display = 'block';
 
+  paused = false;
   showPage('game');
   document.getElementById('opponent-col').classList.remove('hidden');
   board = createBoard(); current = null; next = null; hold = null; draw();
@@ -2908,7 +3086,9 @@ function startOnlineCountdown(callback) {
   const overlay = document.getElementById('countdown-overlay');
   const numEl   = document.getElementById('countdown-number');
   overlay.classList.remove('hidden');
+  stopResultBGM();
   stopBGM();
+  applyOnlineLayout();
   let count = 3;
   function tick() {
     numEl.textContent = count;
@@ -2933,10 +3113,13 @@ function watchAttackQueue() {
     if (gameOver) return;
     const newVal = snap.val() || 0;
     if (newVal > localPending) {
-      // 新規攻撃を受信 → 猶予タイマーをリセット
       attackTimer = ATTACK_TIMER_MAX;
+      attackGauge.color      = '#FFD700';
+      attackGauge.isBlinking = false;
     }
     localPending = newVal;
+    attackGauge.totalLines  = newVal;
+    attackGauge.targetHeight = calcGaugeHeight(newVal);
     drawGarbagePreview();
   });
   opUnsubs.push(unsub);
@@ -3197,9 +3380,13 @@ function cleanupRoom() {
   opUnsubs.forEach(fn => fn()); opUnsubs = [];
   if (gameStateUnsub) { gameStateUnsub(); gameStateUnsub = null; }
   if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
+  if (waitingScreenUnsub) { waitingScreenUnsub(); waitingScreenUnsub = null; }
+  onlineGameState = null;
   if (IS_ONLINE && myRole && window._db) {
+    // onDisconnect ハンドラをキャンセル（退出後の誤作動防止）
+    window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`)).cancel();
+    window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`)).cancel();
     if (IS_HOST) {
-      // ホスト退出時は部屋ごと削除（同IDでの再作成を可能にする）
       window._remove(window._ref(window._db, `rooms/${ROOM_ID}`));
     } else {
       window._remove(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`));

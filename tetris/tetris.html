@@ -2455,6 +2455,7 @@ function startCountdown(onComplete) {
   document.getElementById('gameover-anim').classList.add('hidden');
   const oldUi = document.getElementById('ge-ui');
   if (oldUi) oldUi.remove();
+  garbageRiseAnim = null;
   resetDangerEffects();
   if (previewCanvas) previewCanvas.style.display = 'none';
   document.getElementById('opponent-col').classList.add('hidden');
@@ -2851,6 +2852,7 @@ function startOnlineCountdown(callback) {
   document.getElementById('gameover-anim').classList.add('hidden');
   const oldUi = document.getElementById('ge-ui');
   if (oldUi) oldUi.remove();
+  garbageRiseAnim = null;
   resetDangerEffects();
   if (previewCanvas) previewCanvas.style.display = 'block';
 

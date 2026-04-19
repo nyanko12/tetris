@@ -77,6 +77,12 @@
       <input id="create-room-id-input" type="text" placeholder="ルームID（空欄で自動生成）" maxlength="20">
       <button id="create-room-id-gen">自動生成</button>
     </div>
+    <div id="create-player-count-row">
+      <span>人数：</span>
+      <button class="create-count-btn active" data-count="2">2人</button>
+      <button class="create-count-btn" data-count="3">3人</button>
+      <button class="create-count-btn" data-count="4">4人</button>
+    </div>
     <div id="create-match-settings">
       <div id="create-match-mode-btns">
         <button class="create-mode-btn active" data-mode="wins">先取勝利数</button>
@@ -109,10 +115,16 @@
         <span class="slot-name" id="slot-p2-name">待機中...</span>
         <span class="slot-ready" id="slot-p2-ready"></span>
       </div>
+      <div class="player-slot hidden" id="slot-p3">
+        <span class="slot-name" id="slot-p3-name">待機中...</span>
+        <span class="slot-ready" id="slot-p3-ready"></span>
+      </div>
+      <div class="player-slot hidden" id="slot-p4">
+        <span class="slot-name" id="slot-p4-name">待機中...</span>
+        <span class="slot-ready" id="slot-p4-ready"></span>
+      </div>
     </div>
-    <div id="waiting-wins">
-      <span id="wins-p1">0</span> 勝 ー <span id="wins-p2">0</span> 勝
-    </div>
+    <div id="waiting-wins"></div>
     <div id="match-settings">
       <div id="match-mode-btns">
         <button class="mode-btn active" id="mode-btn-wins" data-mode="wins">先取勝利数</button>
@@ -167,6 +179,14 @@
           <canvas id="hold-canvas" width="300" height="80"></canvas>
         </div>
       </div>
+      <div id="target-panel" class="panel-box hidden">
+        <h3>TARGET</h3>
+        <div id="target-mode-btns">
+          <button class="tgt-mode-btn active" data-mode="random">ランダム</button>
+          <button class="tgt-mode-btn" data-mode="ko">トドメ</button>
+          <button class="tgt-mode-btn" data-mode="counter">カウンター</button>
+        </div>
+      </div>
       <div id="board-area">
         <div id="board-column">
           <canvas id="preview-canvas" width="300" height="120"></canvas>
@@ -207,17 +227,40 @@
       <button id="home-btn">← ホーム</button>
     </div>
 
-    <!-- 相手フィールド（オンライン対戦時のみ表示） -->
-    <div id="opponent-col" class="hidden">
-      <div class="panel-box" id="opponent-name-box">
+    <!-- playerA の盤面（playerB/C/D が見る） -->
+    <div id="opponent-col-a" class="hidden op-col">
+      <div class="panel-box op-name-box">
+        <h3 id="opponent-label-a">PLAYER1</h3>
+        <div class="value op-score" id="opponent-score-a">0</div>
+      </div>
+      <canvas id="opponent-board-a" width="300" height="600"></canvas>
+    </div>
+
+    <!-- playerB の盤面（playerA/C/D が見る） -->
+    <div id="opponent-col" class="hidden op-col">
+      <div class="panel-box op-name-box">
         <h3 id="opponent-label">OPPONENT</h3>
-        <div class="value" style="font-size:16px;" id="opponent-score-display">0</div>
+        <div class="value op-score" id="opponent-score-display">0</div>
       </div>
       <canvas id="opponent-board" width="300" height="600"></canvas>
-      <div class="panel-box" style="margin-top:8px;">
-        <h3>相手スコア</h3>
-        <div class="value" style="font-size:16px;" id="opponent-score-display2">0</div>
+    </div>
+
+    <!-- playerC の盤面（3人以上） -->
+    <div id="opponent-col-c" class="hidden op-col">
+      <div class="panel-box op-name-box">
+        <h3 id="opponent-label-c">PLAYER3</h3>
+        <div class="value op-score" id="opponent-score-c">0</div>
       </div>
+      <canvas id="opponent-board-c" width="300" height="600"></canvas>
+    </div>
+
+    <!-- playerD の盤面（4人） -->
+    <div id="opponent-col-d" class="hidden op-col">
+      <div class="panel-box op-name-box">
+        <h3 id="opponent-label-d">PLAYER4</h3>
+        <div class="value op-score" id="opponent-score-d">0</div>
+      </div>
+      <canvas id="opponent-board-d" width="300" height="600"></canvas>
     </div>
   </div>
 </div>
@@ -435,7 +478,9 @@ document.getElementById('keybind-close').addEventListener('click', () => {
   closeKeybindOverlay();
   // ゲーム中だったらポーズ解除
   if (!document.getElementById('game-screen').classList.contains('hidden') && !gameOver) {
-    paused = false; resumeBGM(); lastTime = performance.now(); animId = requestAnimationFrame(gameLoop);
+    paused = false; resumeBGM();
+    if (_bgTickInterval) { clearInterval(_bgTickInterval); _bgTickInterval = null; }
+    lastTime = performance.now(); animId = requestAnimationFrame(gameLoop);
   }
 });
 
@@ -492,12 +537,32 @@ let IS_HOST   = urlParams.get('host') === '1';
 let _pendingMatchMode   = urlParams.get('matchMode')   || 'wins';
 let _pendingMatchTarget = parseInt(urlParams.get('matchTarget')) || 3;
 let activeOnlineGame = false; // 実際にオンラインゲーム中かどうか
-let myRole = null;  // 'player1' or 'player2'
+let mySlot = null;  // 'playerA' | 'playerB' | 'playerC' | 'playerD'
+let maxPlayers = 2;
+let _pendingMaxPlayers = 2;
+const PLAYER_SLOTS = ['playerA', 'playerB', 'playerC', 'playerD'];
+const ALL_ATTACK_REN_THRESHOLD = 7;
+const ALL_ATTACK_MULTIPLIER    = 0.7;
 let opUnsubs = []; // Firebase監視の解除関数
+let targetMode        = 'random'; // 'random' | 'ko' | 'counter'
+let lastAttackerSlot  = null;
+let currentTargetSlot = null;
+let cachedPlayers     = {};
 
-const opCanvas = document.getElementById('opponent-board');
-const opCtx    = opCanvas ? opCanvas.getContext('2d') : null;
-const OP_CELL  = 30;
+const opCanvas  = document.getElementById('opponent-board');
+const opCtx     = opCanvas ? opCanvas.getContext('2d') : null;
+const opCanvasA = document.getElementById('opponent-board-a');
+const opCtxA    = opCanvasA ? opCanvasA.getContext('2d') : null;
+const opCanvasC = document.getElementById('opponent-board-c');
+const opCtxC    = opCanvasC ? opCanvasC.getContext('2d') : null;
+const opCanvasD = document.getElementById('opponent-board-d');
+const opCtxD    = opCanvasD ? opCanvasD.getContext('2d') : null;
+const OP_CELL   = 30;
+
+// スロット→キャンバスコンテキストのマップ
+function getOpCtx(slot) {
+  return { playerA: opCtxA, playerB: opCtx, playerC: opCtxC, playerD: opCtxD }[slot] || null;
+}
 
 const gaugeCanvas = document.getElementById('gauge-canvas');
 const gaugeCtx    = gaugeCanvas ? gaugeCanvas.getContext('2d') : null;
@@ -1063,10 +1128,10 @@ function resetDangerEffects() {
 }
 // ===== 危険度演出ここまで =====
 
-let renDisplay = null; // { count, y, startTime }
+let renDisplay = null; // { type:'REN'|'TETRIS'|'TSPIN', count, y, startTime }
 
 function clearLines() {
-  const isTSpin = IS_ONLINE ? detectTSpin() : false;
+  const isTSpin = detectTSpin();
   lastActionWasRotation = false;
 
   let cleared = 0;
@@ -1083,24 +1148,29 @@ function clearLines() {
   if (cleared > 0) {
     lineClearSE.currentTime = 0;
     lineClearSE.play();
-    const pts = [0, 100, 300, 500, 800];
-    score += (pts[cleared] || 800) * level;
+    const basePts   = [0, 100, 300, 500, 1000]; // 4列は1000
+    const tspinPts  = [0, 800, 1200, 1600, 2000];
+    const baseScore = (isTSpin ? (tspinPts[Math.min(cleared, 4)] ?? 2000) : (basePts[Math.min(cleared, 4)] ?? 1000)) * level;
+    renCount++;
+    const renBonus  = renCount >= 2 ? (renCount - 1) * 50 * level : 0;
+    score += baseScore + renBonus;
     lines += cleared;
     if (!IS_ONLINE) {
       level = Math.min(10, lastLevel + Math.floor(lines / 10));
       dropInterval = Math.max(100, 500 - (level - 1) * 40);
     }
     updateUI();
-
-    // RENカウント更新（全モード共通）
-    renCount++;
-    if (renCount >= 2) {
-      const avgY = clearedRowYs.reduce((s, r) => s + r, 0) / clearedRowYs.length;
-      renDisplay = { count: renCount, y: avgY, startTime: performance.now() };
+    const avgY = clearedRowYs.reduce((s, r) => s + r, 0) / clearedRowYs.length;
+    if (isTSpin) {
+      renDisplay = { type: 'TSPIN', y: avgY, startTime: performance.now() };
+    } else if (cleared === 4) {
+      renDisplay = { type: 'TETRIS', y: avgY, startTime: performance.now() };
+    } else if (renCount >= 2) {
+      renDisplay = { type: 'REN', count: renCount, y: avgY, startTime: performance.now() };
     }
 
-    if (IS_ONLINE && myRole && window._db) {
-      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/score`), score);
+    if (IS_ONLINE && mySlot && window._db) {
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}/score`), score);
       // 攻撃力計算
       let attack = ATTACK_TABLE[Math.min(cleared, 4)] ?? 4;
       if (isTSpin) attack += cleared * 2; // T-Spinボーナス
@@ -1114,11 +1184,7 @@ function clearLines() {
       attackTimer = ATTACK_TIMER_MAX;
       attackGauge.totalLines  = localPending;
       attackGauge.targetHeight = calcGaugeHeight(localPending);
-      if (attack > 0) {
-        const opRole = myRole === 'player1' ? 'player2' : 'player1';
-        window._runTransaction(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/pendingAttack`),
-          cur => (cur || 0) + attack);
-      }
+      sendAttack(attack, cleared);
       drawGarbagePreview();
     }
   } else {
@@ -1311,8 +1377,8 @@ function applyPendingGarbage() {
   attackTimer = 0;
   attackGauge.totalLines   = 0;
   attackGauge.targetHeight = 0;
-  if (myRole && window._db) {
-    window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/pendingAttack`), 0);
+  if (mySlot && window._db) {
+    window._set(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}/pendingAttack`), 0);
   }
   drawGarbagePreview();
 }
@@ -1374,7 +1440,7 @@ function lockPiece() {
   }));
   playLockSound();
 
-  const isTSpin = IS_ONLINE ? detectTSpin() : false;
+  const isTSpin = detectTSpin();
   lastActionWasRotation = false;
 
   // sparkle用にmerge前のブロック座標とミノ種別を記録
@@ -1403,8 +1469,12 @@ function lockPiece() {
     for (let i = 0; i < cleared; i++) board.unshift(new Array(COLS).fill(0));
 
     // スコア
-    const pts = [0, 100, 300, 500, 800];
-    score += (pts[cleared] || 800) * level;
+    const basePts2  = [0, 100, 300, 500, 1000];
+    const tspinPts2 = [0, 800, 1200, 1600, 2000];
+    renCount++;
+    const renBonus2  = renCount >= 2 ? (renCount - 1) * 50 * level : 0;
+    const baseScore2 = (isTSpin ? (tspinPts2[Math.min(cleared, 4)] ?? 2000) : (basePts2[Math.min(cleared, 4)] ?? 1000)) * level;
+    score += baseScore2 + renBonus2;
     lines += cleared;
     if (!IS_ONLINE) {
       level = Math.min(10, lastLevel + Math.floor(lines / 10));
@@ -1412,16 +1482,19 @@ function lockPiece() {
     }
     updateUI();
 
-    // REN
-    renCount++;
-    if (renCount >= 2) {
-      const avgY = fullRows.reduce((s, r) => s + r, 0) / fullRows.length;
-      renDisplay = { count: renCount, y: avgY, startTime: performance.now() };
+    // REN / TETRIS / T-SPIN 表示
+    const avgY = fullRows.reduce((s, r) => s + r, 0) / fullRows.length;
+    if (isTSpin) {
+      renDisplay = { type: 'TSPIN', y: avgY, startTime: performance.now() };
+    } else if (cleared === 4) {
+      renDisplay = { type: 'TETRIS', y: avgY, startTime: performance.now() };
+    } else if (renCount >= 2) {
+      renDisplay = { type: 'REN', count: renCount, y: avgY, startTime: performance.now() };
     }
 
     // 攻撃送信（オンライン）
-    if (IS_ONLINE && myRole && window._db) {
-      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/score`), score);
+    if (IS_ONLINE && mySlot && window._db) {
+      window._set(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}/score`), score);
       let attack = ATTACK_TABLE[Math.min(cleared, 4)] ?? 4;
       if (isTSpin) attack += cleared * 2;
       attack += REN_BONUS_TABLE[Math.min(renCount, 6)];
@@ -1433,17 +1506,13 @@ function lockPiece() {
       attackTimer = ATTACK_TIMER_MAX;
       attackGauge.totalLines   = localPending;
       attackGauge.targetHeight = calcGaugeHeight(localPending);
-      if (attack > 0) {
-        const opRole = myRole === 'player1' ? 'player2' : 'player1';
-        window._runTransaction(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/pendingAttack`),
-          cur => (cur || 0) + attack);
-      }
+      sendAttack(attack, cleared);
       drawGarbagePreview();
     }
     // ライン消去時はattackTimerをリセット済みのため、ここでは適用しない
     // タイマー満了後にgameLoopが applyPendingGarbage() を呼ぶ
-    if (IS_ONLINE && myRole && window._db) {
-      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+    if (IS_ONLINE && mySlot && window._db) {
+      syncBoardToFirebase();
     }
 
     // エフェクト開始（spawnNextはアニメーション完了後）
@@ -1453,8 +1522,8 @@ function lockPiece() {
   } else {
     renCount = 0;
     spawnNext();
-    if (IS_ONLINE && myRole && window._db) {
-      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+    if (IS_ONLINE && mySlot && window._db) {
+      syncBoardToFirebase();
     }
   }
 }
@@ -1497,8 +1566,8 @@ function updateClearEffects(dt) {
     clearEffects = [];
     isClearAnimating = false;
     spawnNext();
-    if (IS_ONLINE && myRole && window._db) {
-      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+    if (IS_ONLINE && mySlot && window._db) {
+      syncBoardToFirebase();
     }
   }
 }
@@ -1762,7 +1831,7 @@ function draw() {
     ctx.textBaseline = 'alphabetic';
   }
 
-  // REN表示
+  // REN / TETRIS / T-SPIN 表示
   if (renDisplay) {
     const age = performance.now() - renDisplay.startTime;
     const duration = 1800;
@@ -1774,19 +1843,34 @@ function draw() {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       const cx = canvas.width / 2;
-      // 影
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.font = 'bold 44px Courier New';
-      ctx.fillText(renDisplay.count, cx + 2, floatY + 2);
-      ctx.font = 'bold 16px Courier New';
-      ctx.fillText('REN', cx + 2, floatY + 30);
-      // 本体
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 44px Courier New';
-      ctx.fillText(renDisplay.count, cx, floatY);
-      ctx.fillStyle = '#fc0';
-      ctx.font = 'bold 16px Courier New';
-      ctx.fillText('REN', cx, floatY + 28);
+      if (renDisplay.type === 'TSPIN') {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.font = 'bold 36px Courier New';
+        ctx.fillText('T-SPIN', cx + 2, floatY + 2);
+        ctx.fillStyle = '#d060ff';
+        ctx.font = 'bold 36px Courier New';
+        ctx.fillText('T-SPIN', cx, floatY);
+      } else if (renDisplay.type === 'TETRIS') {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.font = 'bold 38px Courier New';
+        ctx.fillText('TETRIS', cx + 2, floatY + 2);
+        ctx.fillStyle = '#00f0f0';
+        ctx.font = 'bold 38px Courier New';
+        ctx.fillText('TETRIS', cx, floatY);
+      } else {
+        // REN
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.font = 'bold 44px Courier New';
+        ctx.fillText(renDisplay.count, cx + 2, floatY + 2);
+        ctx.font = 'bold 16px Courier New';
+        ctx.fillText('REN', cx + 2, floatY + 30);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 44px Courier New';
+        ctx.fillText(renDisplay.count, cx, floatY);
+        ctx.fillStyle = '#fc0';
+        ctx.font = 'bold 16px Courier New';
+        ctx.fillText('REN', cx, floatY + 28);
+      }
       ctx.restore();
     } else {
       renDisplay = null;
@@ -1857,8 +1941,8 @@ function gameLoop(timestamp) {
           return;
         }
       }
-      if (myRole && window._db) {
-        window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+      if (mySlot && window._db) {
+        syncBoardToFirebase();
       }
     }
   }
@@ -1887,6 +1971,77 @@ function gameLoop(timestamp) {
   updateDangerEffects(timestamp, dt);
   if (!gameOver) animId = requestAnimationFrame(gameLoop);
 }
+
+// ===== バックグラウンド時のゲームループ =====
+let _bgTickInterval = null;
+let _bgLastTime     = 0;
+
+function _gameLogicStep(dt) {
+  if (gameOver || paused) return;
+  dt = Math.min(dt, 500); // 大きすぎるジャンプを防ぐ
+
+  if (isClearAnimating) {
+    updateClearEffects(dt);
+    return;
+  }
+
+  dropCounter += dt;
+
+  if (IS_ONLINE && current && localPending > 0 && attackTimer > 0) {
+    attackTimer -= dt / 1000;
+    if (attackTimer <= 0) {
+      attackTimer = 0;
+      applyPendingGarbage();
+      if (current && collide(current, board)) {
+        while (current.y > 0 && collide(current, board)) current.y--;
+        if (collide(current, board)) {
+          current = null; gameOver = true;
+          handleGameOver(); stopBGM();
+          triggerGameEnd('lose');
+          return;
+        }
+      }
+      if (mySlot && window._db)
+        syncBoardToFirebase();
+    }
+  }
+
+  if (current) {
+    const grounded = collide(current, board, 0, 1);
+    if (grounded) {
+      lockCounter += dt;
+      if (lockCounter >= LOCK_DELAY) lockPiece();
+    } else {
+      lockCounter = 0;
+      const effectiveInterval = softDropping ? SOFT_DROP_INTERVAL : dropInterval;
+      if (dropCounter >= effectiveInterval) {
+        dropCounter = 0;
+        current.y++;
+      }
+    }
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (animId) { cancelAnimationFrame(animId); animId = null; }
+    if (_bgTickInterval || gameOver || paused) return;
+    _bgLastTime = performance.now();
+    _bgTickInterval = setInterval(() => {
+      const now = performance.now();
+      _gameLogicStep(now - _bgLastTime);
+      _bgLastTime = now;
+      if (gameOver) { clearInterval(_bgTickInterval); _bgTickInterval = null; }
+    }, 100);
+  } else {
+    if (_bgTickInterval) { clearInterval(_bgTickInterval); _bgTickInterval = null; }
+    if (!gameOver && !paused && animId === null &&
+        !document.getElementById('game-screen').classList.contains('hidden')) {
+      lastTime = performance.now();
+      animId = requestAnimationFrame(gameLoop);
+    }
+  }
+});
 
 let gameOverAnimId = null;
 
@@ -2420,10 +2575,16 @@ function resetOnlineLayout() {
   document.getElementById('game-keybind-btn').style.display = '';
   document.getElementById('home-btn').style.display = '';
   document.getElementById('my-name-panel').classList.add('hidden');
+  document.getElementById('target-panel').classList.add('hidden');
   if (gaugeCanvas) gaugeCanvas.style.display = 'none';
+  removeTargetOverlay();
   document.getElementById('left-col').style.order = '';
   document.getElementById('side-panel').style.order = '';
-  document.getElementById('opponent-col').style.order = '';
+  // Hide all opponent columns and reset their order
+  ['opponent-col-a', 'opponent-col', 'opponent-col-c', 'opponent-col-d'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.classList.add('hidden'); el.style.order = ''; }
+  });
 }
 function applyOnlineLayout() {
   document.getElementById('level-panel').style.display = 'none';
@@ -2433,18 +2594,37 @@ function applyOnlineLayout() {
   document.getElementById('home-btn').style.display = 'none';
   document.getElementById('my-name-panel').classList.remove('hidden');
   if (gaugeCanvas) gaugeCanvas.style.display = 'block';
+  // ターゲットパネルは3人以上のときのみ表示
+  document.getElementById('target-panel').classList.toggle('hidden', maxPlayers < 3);
 
-  if (myRole === 'player2') {
-    document.getElementById('opponent-col').style.order = '1';
-    document.getElementById('left-col').style.order = '2';
-    document.getElementById('side-panel').style.order = '3';
-  }
+  // Set CSS order for layout: each slot gets a fixed column position
+  // playerA=col1, playerB=col2, playerC=col3, playerD=col4
+  const slotOrder = { playerA: 1, playerB: 3, playerC: 5, playerD: 7 };
+  const myOrder = slotOrder[mySlot] ?? 1;
+  document.getElementById('left-col').style.order    = String(myOrder);
+  document.getElementById('side-panel').style.order  = String(myOrder + 1);
 
-  const opRole = myRole === 'player1' ? 'player2' : 'player1';
+  // Show opponent columns for other active slots
+  const opCols = { playerA: 'opponent-col-a', playerB: 'opponent-col', playerC: 'opponent-col-c', playerD: 'opponent-col-d' };
+  const opColOrders = { playerA: 1, playerB: 3, playerC: 5, playerD: 7 };
+  PLAYER_SLOTS.forEach(slot => {
+    if (slot === mySlot) return;
+    const colEl = document.getElementById(opCols[slot]);
+    if (!colEl) return;
+    colEl.style.order = String(opColOrders[slot]);
+  });
+
   window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
     const data = snap.val() || {};
-    document.getElementById('my-name-text').textContent = data[myRole]?.name || myNickname;
-    document.getElementById('opponent-label').textContent = data[opRole]?.name || 'OPPONENT';
+    const players = data.players || {};
+    document.getElementById('my-name-text').textContent = players[mySlot]?.name || myNickname;
+    // Update opponent labels
+    PLAYER_SLOTS.forEach(slot => {
+      if (slot === mySlot) return;
+      const labelId = { playerA: 'opponent-label-a', playerB: 'opponent-label', playerC: 'opponent-label-c', playerD: 'opponent-label-d' }[slot];
+      const el = document.getElementById(labelId);
+      if (el && players[slot]?.name) el.textContent = players[slot].name;
+    });
   }, { onlyOnce: true });
 }
 // ====== BGM ======
@@ -2861,7 +3041,7 @@ let bothReadyUnsub = null;
 let waitingScreenUnsub = null;
 
 function makePlayerData(nickname) {
-  return { name: nickname || 'Player', uuid: myUUID, ready: false, board: null, score: 0, wins: 0, isGameOver: false };
+  return { name: nickname || 'Player', uid: myUUID, ready: false, board: null, score: 0, wins: 0, pendingAttack: 0, isGameOver: false };
 }
 
 // ---- ランダムルームID生成 ----
@@ -2886,34 +3066,48 @@ function joinRoom(nickname) {
     const data = snap.val();
 
     if (IS_HOST) {
-      // 部屋を作る → 常に新規作成（古いデータを上書き）
-      // 自分以外のUUIDがすでにホストなら弾く
-      if (data?.player1?.uuid && data.player1.uuid !== myUUID) {
+      // ホスト：既存ルームが別UIDに占有されていないか確認
+      const existingHostUid = data?.players?.playerA?.uid ?? data?.players?.playerA?.uuid;
+      if (existingHostUid && existingHostUid !== myUUID) {
         if (statusEl) statusEl.textContent = 'このルームIDは既に使用されています';
         return;
       }
-      myRole = 'player1';
-      const initMode   = _pendingMatchMode;
-      const initTarget = _pendingMatchTarget;
+      mySlot  = 'playerA';
+      maxPlayers = _pendingMaxPlayers;
       window._set(window._ref(window._db, `rooms/${ROOM_ID}`), {
-        config:  { matchMode: initMode, matchTarget: initTarget, gameState: 'waiting' },
-        player1: makePlayerData(nickname),
+        maxPlayers,
+        playerCount: 1,
+        status: 'waiting',
+        config: { matchMode: _pendingMatchMode, matchTarget: _pendingMatchTarget, gameState: 'waiting' },
+        players: { playerA: makePlayerData(nickname) },
       });
-    } else if (data?.player2?.uuid === myUUID) {
-      // player2 として再接続
-      myRole = 'player2';
     } else {
-      // 部屋に参加する → player2として入室
-      if (!data?.player1?.uuid) {
-        if (statusEl) statusEl.textContent = 'ルームが見つかりません';
-        return;
+      // ゲスト：自分が既にスロット済みなら再接続
+      const players = data?.players || {};
+      const existingSlot = PLAYER_SLOTS.find(s => (players[s]?.uid ?? players[s]?.uuid) === myUUID);
+      if (existingSlot) {
+        mySlot = existingSlot;
+        maxPlayers = data?.maxPlayers ?? 2;
+      } else {
+        // 新規入室
+        if (!data?.players?.playerA) {
+          if (statusEl) statusEl.textContent = 'ルームが見つかりません';
+          return;
+        }
+        if (data?.status !== 'waiting') {
+          if (statusEl) statusEl.textContent = 'ゲームはすでに開始しています';
+          return;
+        }
+        const emptySlot = PLAYER_SLOTS.find(s => !players[s]?.uid && !players[s]?.uuid);
+        if (!emptySlot || (data?.playerCount ?? 0) >= (data?.maxPlayers ?? 2)) {
+          if (statusEl) statusEl.textContent = 'ルームが満員です';
+          return;
+        }
+        mySlot     = emptySlot;
+        maxPlayers = data?.maxPlayers ?? 2;
+        window._set(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}`), makePlayerData(nickname));
+        window._set(window._ref(window._db, `rooms/${ROOM_ID}/playerCount`), (data?.playerCount ?? 1) + 1);
       }
-      if (data?.player2?.uuid) {
-        if (statusEl) statusEl.textContent = 'ルームが満員です';
-        return;
-      }
-      myRole = 'player2';
-      window._set(window._ref(window._db, `rooms/${ROOM_ID}/player2`), makePlayerData(nickname));
     }
 
     registerDisconnectHandler();
@@ -2929,19 +3123,21 @@ function joinRoom(nickname) {
 
 // ---- 切断処理 ----
 function registerDisconnectHandler() {
-  window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`)).remove();
+  window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}`)).remove();
   window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`)).set('waiting');
 }
 
 function watchOpponentDisconnect() {
-  const opRole = myRole === 'player1' ? 'player2' : 'player1';
-  const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}`), snap => {
-    if (snap.val() === null && onlineGameState === 'playing') {
-      showOnlineResult('相手が切断しました', 'あなたの勝ち！', false, '');
-      cleanupRoom();
-    }
+  PLAYER_SLOTS.slice(0, maxPlayers).forEach(slot => {
+    if (slot === mySlot) return;
+    const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/players/${slot}`), snap => {
+      if (snap.val() === null && onlineGameState === 'playing') {
+        showOnlineResult('相手が切断しました', 'あなたの勝ち！', false, '');
+        cleanupRoom();
+      }
+    });
+    opUnsubs.push(unsub);
   });
-  opUnsubs.push(unsub);
 }
 
 // ---- 待機画面 ----
@@ -2962,12 +3158,31 @@ function initWaitingScreen() {
   setupMatchSettings();
   if (waitingScreenUnsub) { waitingScreenUnsub(); waitingScreenUnsub = null; }
   waitingScreenUnsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
-    const data = snap.val() || {};
-    updatePlayerSlot('p1', data.player1);
-    updatePlayerSlot('p2', data.player2);
-    document.getElementById('wins-p1').textContent = data.player1?.wins ?? 0;
-    document.getElementById('wins-p2').textContent = data.player2?.wins ?? 0;
-    if (data.player1 && data.player2) document.getElementById('ready-btn').disabled = false;
+    const data    = snap.val() || {};
+    const players = data.players || {};
+    const mp      = data.maxPlayers ?? maxPlayers ?? 2;
+
+    // Show/hide p3/p4 slots based on maxPlayers
+    document.getElementById('slot-p3').classList.toggle('hidden', mp < 3);
+    document.getElementById('slot-p4').classList.toggle('hidden', mp < 4);
+
+    const slotMap = { playerA: 'p1', playerB: 'p2', playerC: 'p3', playerD: 'p4' };
+    PLAYER_SLOTS.forEach(slot => updatePlayerSlot(slotMap[slot], players[slot]));
+
+    // Wins display (dynamic)
+    const winsDiv = document.getElementById('waiting-wins');
+    winsDiv.innerHTML = '';
+    PLAYER_SLOTS.slice(0, mp).forEach(slot => {
+      const p = players[slot];
+      const span = document.createElement('span');
+      span.style.marginRight = '12px';
+      span.textContent = `${p?.name ?? '?'}: ${p?.wins ?? 0}勝`;
+      winsDiv.appendChild(span);
+    });
+
+    const activePlayers = PLAYER_SLOTS.filter(s => players[s]?.uid);
+    if (activePlayers.length >= mp) document.getElementById('ready-btn').disabled = false;
+
     const mode   = data.config?.matchMode   ?? 'wins';
     const target = data.config?.matchTarget ?? 3;
     updateMatchSettingsUI(mode, target);
@@ -2975,7 +3190,7 @@ function initWaitingScreen() {
 }
 
 function setupMatchSettings() {
-  const isP1 = myRole === 'player1';
+  const isP1 = mySlot === 'playerA';
   document.querySelectorAll('.mode-btn').forEach(btn => {
     btn.disabled = !isP1;
     btn.onclick = isP1 ? () => {
@@ -3005,7 +3220,7 @@ function updateMatchSettingsUI(mode, target) {
 document.getElementById('ready-btn').addEventListener('click', () => {
   document.getElementById('ready-btn').disabled = true;
   document.querySelectorAll('.mode-btn, .target-btn').forEach(btn => btn.disabled = true);
-  window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/ready`), true);
+  window._set(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}/ready`), true);
   document.getElementById('waiting-status').textContent = '相手の準備を待っています...';
 });
 
@@ -3024,12 +3239,12 @@ function watchBothReady() {
   if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
   bothReadyUnsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
     const data = snap.val();
-    if (
-      data?.player1?.ready === true &&
-      data?.player2?.ready === true &&
-      data?.config?.gameState === 'waiting' &&
-      myRole === 'player1'
-    ) {
+    if (data?.config?.gameState !== 'waiting' || mySlot !== 'playerA') return;
+    const players = data.players || {};
+    const mp = data.maxPlayers ?? maxPlayers ?? 2;
+    const activePlayers = PLAYER_SLOTS.slice(0, mp).filter(s => players[s]?.uid);
+    const allReady = activePlayers.length >= mp && activePlayers.every(s => players[s]?.ready === true);
+    if (allReady) {
       bothReadyUnsub(); bothReadyUnsub = null;
       window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'countdown');
     }
@@ -3043,12 +3258,16 @@ function watchGameState() {
     const state = snap.val();
     onlineGameState = state;
     if (state === 'countdown' && prevState !== 'countdown') {
+      // Sync maxPlayers from DB before countdown so column layout is correct
+      window._get(window._ref(window._db, `rooms/${ROOM_ID}/maxPlayers`)).then(mpSnap => {
+        if (mpSnap.val()) maxPlayers = mpSnap.val();
+      }).catch(() => {});
       startOnlineCountdown(() => {
         // ローカルの勝利数をDBから同期
-        window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/wins`), snap => {
+        window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}/wins`), snap => {
           currentWins = snap.val() ?? 0;
         }, { onlyOnce: true });
-        if (myRole === 'player1') {
+        if (mySlot === 'playerA') {
           window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'playing');
         }
         showPage('game');
@@ -3080,9 +3299,21 @@ function startOnlineCountdown(callback) {
 
   paused = false;
   showPage('game');
-  document.getElementById('opponent-col').classList.remove('hidden');
+  // Show opponent columns for other slots up to maxPlayers
+  const opColIds = { playerA: 'opponent-col-a', playerB: 'opponent-col', playerC: 'opponent-col-c', playerD: 'opponent-col-d' };
+  PLAYER_SLOTS.slice(0, maxPlayers).forEach(slot => {
+    if (slot === mySlot) return;
+    const el = document.getElementById(opColIds[slot]);
+    if (el) el.classList.remove('hidden');
+  });
   board = createBoard(); current = null; next = null; hold = null; draw();
-  if (opCtx) opCtx.clearRect(0, 0, opCanvas.width, opCanvas.height);
+  opDeadSlots.clear();
+  lastAttackerSlot  = null;
+  currentTargetSlot = null;
+  cachedPlayers     = {};
+  // targetModeはUIボタンの状態を維持（リセットしない）
+  PLAYER_SLOTS.forEach(slot => { const ctx = getOpCtx(slot); if (ctx) ctx.clearRect(0, 0, COLS * OP_CELL, ROWS * OP_CELL); });
+  if (maxPlayers >= 3) createTargetOverlay();
   const overlay = document.getElementById('countdown-overlay');
   const numEl   = document.getElementById('countdown-number');
   overlay.classList.remove('hidden');
@@ -3107,9 +3338,177 @@ function startOnlineCountdown(callback) {
   tick();
 }
 
+// ---- ターゲットシステム ----
+function calcFieldHeight(b) {
+  const first = b.findIndex(row => row.some(v => v !== 0));
+  return first === -1 ? 0 : ROWS - first;
+}
+
+function syncBoardToFirebase() {
+  if (!IS_ONLINE || !mySlot || !window._db) return;
+  window._update(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}`), {
+    board:       board,
+    fieldHeight: calcFieldHeight(board),
+  });
+}
+
+function isAllTargetAttack(cleared) {
+  if (cleared === 4) return true;
+  if (renCount >= ALL_ATTACK_REN_THRESHOLD) return true;
+  return false;
+}
+
+function getTargetSlotFromCache() {
+  const alive = PLAYER_SLOTS.slice(0, maxPlayers).filter(s =>
+    s !== mySlot && cachedPlayers[s]?.uid && !cachedPlayers[s]?.isGameOver
+  );
+  if (alive.length === 0) return null;
+  switch (targetMode) {
+    case 'ko':
+      return [...alive].sort((a, b) =>
+        (cachedPlayers[b]?.fieldHeight ?? 0) - (cachedPlayers[a]?.fieldHeight ?? 0)
+      )[0];
+    case 'counter':
+      return (lastAttackerSlot && alive.includes(lastAttackerSlot))
+        ? lastAttackerSlot
+        : (alive.includes(currentTargetSlot) ? currentTargetSlot : alive[Math.floor(Math.random() * alive.length)]);
+    default: // random
+      return alive.includes(currentTargetSlot)
+        ? currentTargetSlot
+        : alive[Math.floor(Math.random() * alive.length)];
+  }
+}
+
+function updateCurrentTarget() {
+  if (maxPlayers < 3 || !mySlot) return;
+  currentTargetSlot = getTargetSlotFromCache();
+}
+
+function sendAttackToSlot(slot, damage) {
+  window._runTransaction(window._ref(window._db, `rooms/${ROOM_ID}/players/${slot}/pendingAttack`),
+    cur => (cur || 0) + damage);
+  window._set(window._ref(window._db, `rooms/${ROOM_ID}/players/${slot}/lastAttacker`), mySlot);
+}
+
+function sendAttack(attack, cleared) {
+  if (attack <= 0 || !IS_ONLINE || !mySlot || !window._db) return;
+  if (maxPlayers === 2) {
+    const opSlot = PLAYER_SLOTS.find(s => s !== mySlot);
+    sendAttackToSlot(opSlot, attack);
+    return;
+  }
+  // 3人以上: ターゲットシステム
+  const allTarget = isAllTargetAttack(cleared);
+  window._get(window._ref(window._db, `rooms/${ROOM_ID}/players`)).then(pSnap => {
+    const players = pSnap.val() || {};
+    cachedPlayers = players;
+    const alive = PLAYER_SLOTS.slice(0, maxPlayers).filter(s =>
+      s !== mySlot && players[s]?.uid && !players[s]?.isGameOver
+    );
+    if (alive.length === 0) return;
+    if (allTarget) {
+      const dmg = Math.max(1, Math.floor(attack * ALL_ATTACK_MULTIPLIER));
+      alive.forEach(slot => sendAttackToSlot(slot, dmg));
+      currentTargetSlot = '__all__';
+    } else {
+      updateCurrentTarget();
+      if (currentTargetSlot && currentTargetSlot !== '__all__') {
+        sendAttackToSlot(currentTargetSlot, attack);
+        // random modeは次回のために再選択
+        if (targetMode === 'random') {
+          const next = alive.filter(s => s !== currentTargetSlot);
+          currentTargetSlot = next.length > 0
+            ? next[Math.floor(Math.random() * next.length)]
+            : alive[Math.floor(Math.random() * alive.length)];
+        }
+      }
+    }
+  });
+}
+
+// ---- ターゲットライン描画オーバーレイ ----
+let targetLineCanvas = null;
+let targetLineCtx    = null;
+
+function _resizeTargetOverlay() {
+  if (!targetLineCanvas) return;
+  targetLineCanvas.width  = window.innerWidth;
+  targetLineCanvas.height = window.innerHeight;
+}
+
+function createTargetOverlay() {
+  if (targetLineCanvas) return;
+  targetLineCanvas = document.createElement('canvas');
+  targetLineCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:20;';
+  document.body.appendChild(targetLineCanvas);
+  _resizeTargetOverlay();
+  window.addEventListener('resize', _resizeTargetOverlay);
+  targetLineCtx = targetLineCanvas.getContext('2d');
+  requestAnimationFrame(_targetLineLoop);
+}
+
+function removeTargetOverlay() {
+  if (targetLineCanvas) { targetLineCanvas.remove(); targetLineCanvas = null; targetLineCtx = null; }
+  window.removeEventListener('resize', _resizeTargetOverlay);
+}
+
+function _drawTargetLines() {
+  if (!targetLineCtx) return;
+  const c = targetLineCtx;
+  c.clearRect(0, 0, targetLineCanvas.width, targetLineCanvas.height);
+  if (maxPlayers < 3 || !currentTargetSlot || gameOver || paused) return;
+
+  const opBoardIds = { playerA: 'opponent-board-a', playerB: 'opponent-board', playerC: 'opponent-board-c', playerD: 'opponent-board-d' };
+  const opColIds   = { playerA: 'opponent-col-a',   playerB: 'opponent-col',   playerC: 'opponent-col-c',   playerD: 'opponent-col-d' };
+  const isAll = currentTargetSlot === '__all__';
+  const myRect = canvas.getBoundingClientRect();
+  const sx = myRect.left + myRect.width / 2;
+  const sy = myRect.top  + myRect.height / 2;
+
+  const targets = isAll
+    ? PLAYER_SLOTS.slice(0, maxPlayers).filter(s => s !== mySlot && !opDeadSlots.has(s))
+    : (opDeadSlots.has(currentTargetSlot) ? [] : [currentTargetSlot]);
+
+  targets.forEach(slot => {
+    const el = document.getElementById(opBoardIds[slot]);
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const ex = rect.left + rect.width / 2;
+    const ey = rect.top  + rect.height / 2;
+    const grad = c.createLinearGradient(sx, sy, ex, ey);
+    grad.addColorStop(0, isAll ? 'rgba(255,200,0,0.85)' : 'rgba(255,60,60,0.8)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    c.beginPath(); c.moveTo(sx, sy); c.lineTo(ex, ey);
+    c.strokeStyle = grad;
+    c.lineWidth = isAll ? 2.5 : 1.5;
+    c.stroke();
+  });
+
+  // ターゲット枠
+  const alive = PLAYER_SLOTS.slice(0, maxPlayers).filter(s => s !== mySlot);
+  alive.forEach(slot => {
+    const col = document.getElementById(opColIds[slot]);
+    if (!col || opDeadSlots.has(slot)) { if (col) { col.style.outline = ''; col.style.boxShadow = ''; } return; }
+    const targeted = isAll || slot === currentTargetSlot;
+    if (targeted) {
+      const pulse = (Math.sin(Date.now() * 0.005) + 1) / 2;
+      const a = (0.45 + pulse * 0.45).toFixed(2);
+      col.style.outline   = `2px solid rgba(${isAll ? '255,200,0' : '255,50,50'},${a})`;
+      col.style.boxShadow = `0 0 ${isAll ? 18 : 10}px rgba(${isAll ? '255,200,0' : '255,50,50'},${(parseFloat(a) * 0.6).toFixed(2)})`;
+    } else {
+      col.style.outline = ''; col.style.boxShadow = '';
+    }
+  });
+}
+
+function _targetLineLoop() {
+  _drawTargetLines();
+  if (targetLineCanvas) requestAnimationFrame(_targetLineLoop);
+}
+
 // ---- 攻撃監視（pendingAttack） ----
 function watchAttackQueue() {
-  const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/pendingAttack`), snap => {
+  const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}/pendingAttack`), snap => {
     if (gameOver) return;
     const newVal = snap.val() || 0;
     if (newVal > localPending) {
@@ -3123,68 +3522,194 @@ function watchAttackQueue() {
     drawGarbagePreview();
   });
   opUnsubs.push(unsub);
+
+  // 最後に攻撃してきたスロットを追跡（カウンターモード用）
+  const unsubAttacker = window._onValue(
+    window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}/lastAttacker`),
+    snap => {
+      if (snap.val()) { lastAttackerSlot = snap.val(); updateCurrentTarget(); }
+    }
+  );
+  opUnsubs.push(unsubAttacker);
+
+  // プレイヤーデータキャッシュ（KO/ターゲット更新用）
+  const unsubPlayers = window._onValue(
+    window._ref(window._db, `rooms/${ROOM_ID}/players`),
+    snap => { cachedPlayers = snap.val() || {}; updateCurrentTarget(); }
+  );
+  opUnsubs.push(unsubPlayers);
 }
 
 // ---- 相手盤面・スコア監視 ----
-function drawOpponentBoard(opBoard) {
-  if (!opCtx) return;
-  opCtx.clearRect(0, 0, opCanvas.width, opCanvas.height);
-  opCtx.strokeStyle = 'rgba(255,255,255,0.04)'; opCtx.lineWidth = 1;
+function drawOpponentBoardOnCtx(ctx, opBoard) {
+  if (!ctx) return;
+  ctx.clearRect(0, 0, COLS * OP_CELL, ROWS * OP_CELL);
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 1;
   for (let r = 0; r < ROWS; r++)
     for (let c = 0; c < COLS; c++)
-      opCtx.strokeRect(c * OP_CELL, r * OP_CELL, OP_CELL, OP_CELL);
+      ctx.strokeRect(c * OP_CELL, r * OP_CELL, OP_CELL, OP_CELL);
   opBoard.forEach((row, r) => {
     row.forEach((val, c) => {
       if (!val) return;
-      opCtx.fillStyle = COLORS[val] || '#888';
-      opCtx.fillRect(c * OP_CELL + 1, r * OP_CELL + 1, OP_CELL - 2, OP_CELL - 2);
-      opCtx.fillStyle = 'rgba(255,255,255,0.2)';
-      opCtx.fillRect(c * OP_CELL + 1, r * OP_CELL + 1, OP_CELL - 2, 3);
+      ctx.fillStyle = COLORS[val] || '#888';
+      ctx.fillRect(c * OP_CELL + 1, r * OP_CELL + 1, OP_CELL - 2, OP_CELL - 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.fillRect(c * OP_CELL + 1, r * OP_CELL + 1, OP_CELL - 2, 3);
     });
   });
 }
+function drawOpponentBoard(opBoard) { drawOpponentBoardOnCtx(opCtx, opBoard); }
 
-function listenOpponentBoard() {
-  const opRole = myRole === 'player1' ? 'player2' : 'player1';
-  const unsubBoard = window._onValue(
-    window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/board`),
-    snap => { if (snap.val()) drawOpponentBoard(snap.val()); }
-  );
-  const unsubScore = window._onValue(
-    window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/score`),
-    snap => {
-      const s = snap.val();
-      if (s !== null) {
-        const el = document.getElementById('opponent-score-display');
-        if (el) el.textContent = Number(s).toLocaleString();
-        const el2 = document.getElementById('opponent-score-display2');
-        if (el2) el2.textContent = Number(s).toLocaleString();
+// 死亡済み相手スロット（アニメ中 or 順位表示中）
+const opDeadSlots = new Set();
+
+function triggerOpponentGameOverAnim(slot, opBoard, rank, playerName) {
+  opDeadSlots.add(slot);
+  const ctx = getOpCtx(slot);
+  if (!ctx) return;
+  const W = COLS * OP_CELL, H = ROWS * OP_CELL;
+
+  // ブロックをデブリ化
+  const debris = [];
+  opBoard.forEach((row, ri) => {
+    row.forEach((val, ci) => {
+      if (!val) return;
+      debris.push({
+        x: ci * OP_CELL + OP_CELL / 2,
+        y: ri * OP_CELL + OP_CELL / 2,
+        vx: (Math.random() - 0.5) * 5,
+        vy: Math.random() * 2 - 1,
+        vAngle: (Math.random() - 0.5) * 0.18,
+        angle: 0,
+        color: COLORS[val] || '#888',
+        size: OP_CELL - 1,
+      });
+    });
+  });
+
+  const ANIM_DURATION = 1400;
+  const startTime = performance.now();
+
+  function frame(ts) {
+    const elapsed = ts - startTime;
+    ctx.clearRect(0, 0, W, H);
+
+    const alpha = Math.max(0, 1 - elapsed / ANIM_DURATION);
+    debris.forEach(d => {
+      d.vy += 0.4;
+      d.x  += d.vx;
+      d.y  += d.vy;
+      d.angle += d.vAngle;
+      if (alpha <= 0) return;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.angle);
+      ctx.fillStyle = d.color;
+      ctx.fillRect(-d.size / 2, -d.size / 2, d.size, d.size);
+      ctx.restore();
+    });
+
+    if (elapsed < ANIM_DURATION) {
+      requestAnimationFrame(frame);
+    } else {
+      // 順位表示
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = 'rgba(0,0,0,0.78)';
+      ctx.fillRect(0, 0, W, H);
+      const cx = W / 2, cy = H / 2;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const rankColor = ['#FFD700', '#C0C0C0', '#CD7F32'][rank - 1] ?? '#ffffff';
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.font = 'bold 60px Arial';
+      ctx.fillText(`${rank}位`, cx + 2, cy - 14);
+      ctx.fillStyle = rankColor;
+      ctx.font = 'bold 60px Arial';
+      ctx.fillText(`${rank}位`, cx, cy - 16);
+      if (playerName) {
+        ctx.fillStyle = '#bbb';
+        ctx.font = 'bold 16px Arial';
+        ctx.fillText(playerName, cx, cy + 32);
       }
     }
-  );
-  opUnsubs.push(unsubBoard, unsubScore);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+function listenOpponentBoard() {
+  const scoreEls = { playerA: 'opponent-score-a', playerB: 'opponent-score-display', playerC: 'opponent-score-c', playerD: 'opponent-score-d' };
+  PLAYER_SLOTS.slice(0, maxPlayers).forEach(slot => {
+    if (slot === mySlot) return;
+    const ctx = getOpCtx(slot);
+    const unsubBoard = window._onValue(
+      window._ref(window._db, `rooms/${ROOM_ID}/players/${slot}/board`),
+      snap => { if (snap.val() && ctx && !opDeadSlots.has(slot)) drawOpponentBoardOnCtx(ctx, snap.val()); }
+    );
+    const unsubScore = window._onValue(
+      window._ref(window._db, `rooms/${ROOM_ID}/players/${slot}/score`),
+      snap => {
+        const s = snap.val();
+        if (s !== null) {
+          const el = document.getElementById(scoreEls[slot]);
+          if (el) el.textContent = Number(s).toLocaleString();
+        }
+      }
+    );
+    opUnsubs.push(unsubBoard, unsubScore);
+  });
 }
 
 // ---- ゲームオーバー・勝利判定 ----
 function handleGameOver() {
-  if (!IS_ONLINE || !myRole || !window._db) return;
-  window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/isGameOver`), true);
-  window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
+  if (!IS_ONLINE || !mySlot || !window._db) return;
+  window._get(window._ref(window._db, `rooms/${ROOM_ID}/players`)).then(snap => {
+    const players = snap.val() || {};
+    const alreadyDead = PLAYER_SLOTS.slice(0, maxPlayers)
+      .filter(s => s !== mySlot && players[s]?.uid && players[s]?.isGameOver === true)
+      .length;
+    const myRank = maxPlayers - alreadyDead;
+    window._update(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}`), {
+      isGameOver: true,
+      rank: myRank,
+      board: board,
+    });
+  });
 }
 
 function watchOpponentGameOver() {
-  const opRole = myRole === 'player1' ? 'player2' : 'player1';
-  const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/${opRole}/isGameOver`), snap => {
-    // 自分以外が全員ゲームオーバー → 1st WINNER
-    if (snap.val() === true && !gameOver && !gameEndResult) {
-      stopBGM();
-      triggerGameEnd('win');
-      currentWins++;
-      window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/wins`), currentWins);
-      window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'result');
-    }
+  PLAYER_SLOTS.slice(0, maxPlayers).forEach(slot => {
+    if (slot === mySlot) return;
+    const unsub = window._onValue(window._ref(window._db, `rooms/${ROOM_ID}/players/${slot}/isGameOver`), snap => {
+      if (snap.val() !== true) return;
+      // 相手のボード・ランクを取得してアニメ起動
+      window._get(window._ref(window._db, `rooms/${ROOM_ID}/players/${slot}`)).then(pSnap => {
+        const pData = pSnap.val() || {};
+        if (pData.board && !opDeadSlots.has(slot)) {
+          triggerOpponentGameOverAnim(slot, pData.board, pData.rank ?? maxPlayers, pData.name ?? slot);
+        }
+      });
+
+      if (gameOver || gameEndResult) return;
+      window._get(window._ref(window._db, `rooms/${ROOM_ID}/players`)).then(pSnap => {
+        const players = pSnap.val() || {};
+        const opSlots = PLAYER_SLOTS.slice(0, maxPlayers).filter(s => s !== mySlot && players[s]?.uid);
+        const allOpDone = opSlots.every(s => players[s]?.isGameOver === true);
+        if (allOpDone) {
+          stopBGM();
+          triggerGameEnd('win');
+          currentWins++;
+          window._update(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}`), {
+            wins: currentWins,
+            rank: 1,
+          });
+          window._set(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`), 'result');
+        }
+      });
+    });
+    opUnsubs.push(unsub);
   });
-  opUnsubs.push(unsub);
 }
 
 // ---- リザルト ----
@@ -3223,7 +3748,7 @@ function injectSoloGameEndUI(scoreText) {
   retryBtn.style.cssText = 'padding:12px 36px;font-size:17px;background:#e94560;color:#fff;border:none;border-radius:4px;cursor:pointer;letter-spacing:1px;';
   retryBtn.onmouseover = () => retryBtn.style.background = '#c73652';
   retryBtn.onmouseout  = () => retryBtn.style.background = '#e94560';
-  retryBtn.onclick = () => { cleanupAnim(); startCountdown(() => startGame(lastLevel)); };
+  retryBtn.onclick = () => { cleanupAnim(); stopResultBGM(); startCountdown(() => startGame(lastLevel)); };
   btnRow.appendChild(retryBtn);
 
   const homeBtn = document.createElement('button');
@@ -3239,19 +3764,40 @@ function injectSoloGameEndUI(scoreText) {
 }
 
 // ゲームエンドアニメ上にボタンを注入（対戦用）
-function injectGameEndUI(winsText, roundText, showRematch) {
+function injectGameEndUI(winsText, roundText, showRematch, rankingLines) {
   const animDiv = document.getElementById('gameover-anim');
   const old = document.getElementById('ge-ui');
   if (old) old.remove();
 
   const ui = document.createElement('div');
   ui.id = 'ge-ui';
-  ui.style.cssText = 'position:absolute;top:62%;left:50%;transform:translateX(-50%);text-align:center;color:#fff;font-family:Arial,sans-serif;z-index:10;white-space:nowrap;background:rgba(0,0,0,0.55);border-radius:12px;padding:24px 40px;backdrop-filter:blur(4px);';
+  ui.style.cssText = 'position:absolute;top:65%;left:50%;transform:translateX(-50%);text-align:center;color:#fff;font-family:Arial,sans-serif;z-index:10;white-space:nowrap;background:rgba(0,0,0,0.65);border-radius:12px;padding:24px 40px;backdrop-filter:blur(4px);';
+
+  // 順位表
+  if (rankingLines && rankingLines.length > 0) {
+    const RANK_MEDALS = ['1位', '2位', '3位', '4位'];
+    const table = document.createElement('div');
+    table.style.cssText = 'margin:0 0 14px;border-bottom:1px solid rgba(255,255,255,0.2);padding-bottom:12px;';
+    rankingLines.forEach((line, i) => {
+      const row = document.createElement('div');
+      const isMe = line.isMe;
+      row.style.cssText = `display:flex;justify-content:space-between;gap:24px;font-size:${isMe ? '17px' : '15px'};font-weight:${isMe ? 'bold' : 'normal'};color:${isMe ? '#fff' : '#bbb'};margin:3px 0;`;
+      const rankEl = document.createElement('span');
+      rankEl.textContent = RANK_MEDALS[i] ?? `${i+1}位`;
+      rankEl.style.cssText = i === 0 ? 'color:#FFD700;' : i === 1 ? 'color:#C0C0C0;' : i === 2 ? 'color:#CD7F32;' : '';
+      const nameEl = document.createElement('span');
+      nameEl.textContent = line.name + (isMe ? ' ◀' : '');
+      row.appendChild(rankEl);
+      row.appendChild(nameEl);
+      table.appendChild(row);
+    });
+    ui.appendChild(table);
+  }
 
   if (winsText) {
     const el = document.createElement('p');
     el.textContent = winsText;
-    el.style.cssText = 'font-size:22px;margin:0 0 8px;font-weight:bold;text-shadow:0 2px 8px rgba(0,0,0,0.9);';
+    el.style.cssText = 'font-size:16px;margin:0 0 6px;color:#ccc;text-shadow:0 2px 8px rgba(0,0,0,0.9);';
     ui.appendChild(el);
   }
   if (roundText) {
@@ -3301,30 +3847,37 @@ function showOnlineResultFromDB() {
   window._onValue(window._ref(window._db, `rooms/${ROOM_ID}`), snap => {
     const data = snap.val();
     if (!data) return;
-    const p1Wins      = data.player1?.wins ?? 0;
-    const p2Wins      = data.player2?.wins ?? 0;
+    const players     = data.players || {};
     const matchMode   = data.config?.matchMode   ?? 'wins';
     const matchTarget = data.config?.matchTarget ?? 3;
-    const p1Name      = data.player1?.name ?? 'Player1';
-    const p2Name      = data.player2?.name ?? 'Player2';
-    const myWins      = myRole === 'player1' ? p1Wins : p2Wins;
-    const opWins      = myRole === 'player1' ? p2Wins : p1Wins;
-    const winsText    = `${p1Name} ${p1Wins}勝 ー ${p2Name} ${p2Wins}勝`;
+    const mp          = data.maxPlayers ?? maxPlayers ?? 2;
     stopBGM();
 
+    const myWins = players[mySlot]?.wins ?? 0;
+    const activePlayers = PLAYER_SLOTS.slice(0, mp).filter(s => players[s]?.uid);
+    const winsText = activePlayers
+      .map(s => `${players[s].name ?? s} ${players[s].wins ?? 0}勝`)
+      .join(' ー ');
+    const maxWins = Math.max(...activePlayers.map(s => players[s]?.wins ?? 0));
+
+    // 順位表：rank フィールドで昇順ソート（未設定は末尾）
+    const rankingLines = activePlayers
+      .sort((a, b) => (players[a]?.rank ?? 99) - (players[b]?.rank ?? 99))
+      .map(s => ({ name: players[s]?.name ?? s, isMe: s === mySlot }));
+
     if (matchMode === 'rounds') {
-      const totalRounds = p1Wins + p2Wins;
+      const totalRounds = activePlayers.reduce((sum, s) => sum + (players[s]?.wins ?? 0), 0);
       if (totalRounds >= matchTarget) {
-        let matchResult = myWins > opWins ? '勝利！' : myWins < opWins ? '敗北' : '引き分け';
-        injectGameEndUI(winsText, `全${matchTarget}ラウンド終了 ─ ${matchResult}`, false);
+        const isWinner = myWins === maxWins;
+        injectGameEndUI(winsText, `全${matchTarget}ラウンド終了 ─ ${isWinner ? '勝利！' : '敗北'}`, false, rankingLines);
       } else {
-        injectGameEndUI(winsText, `第${totalRounds + 1} / 全${matchTarget}ラウンド`, true);
+        injectGameEndUI(winsText, `第${totalRounds + 1} / 全${matchTarget}ラウンド`, true, rankingLines);
       }
     } else {
-      if (p1Wins >= matchTarget || p2Wins >= matchTarget) {
-        injectGameEndUI(winsText, myWins >= matchTarget ? 'マッチ勝利！' : 'マッチ敗北', false);
+      if (maxWins >= matchTarget) {
+        injectGameEndUI(winsText, myWins >= matchTarget ? 'マッチ勝利！' : 'マッチ敗北', false, rankingLines);
       } else {
-        injectGameEndUI(winsText, null, true);
+        injectGameEndUI(winsText, null, true, rankingLines);
       }
     }
   }, { onlyOnce: true });
@@ -3354,13 +3907,12 @@ function rematch() {
   opUnsubs.forEach(fn => fn()); opUnsubs = [];
   if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
   const resetData = { board: null, score: 0, isGameOver: false, ready: false, pendingAttack: 0 };
-  window._update(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`), resetData);
-  if (myRole === 'player1') {
-    const opRole = 'player2';
-    window._update(window._ref(window._db, `rooms/${ROOM_ID}`), {
-      [`${opRole}/ready`]: false,
-      'config/gameState': 'waiting'
-    });
+  window._update(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}`), resetData);
+  if (mySlot === 'playerA') {
+    // Reset all other players' ready state and set gameState back to waiting
+    const updates = { 'config/gameState': 'waiting' };
+    PLAYER_SLOTS.forEach(s => { if (s !== mySlot) updates[`players/${s}/ready`] = false; });
+    window._update(window._ref(window._db, `rooms/${ROOM_ID}`), updates);
   }
   showPage('waiting');
   initWaitingScreen();
@@ -3382,17 +3934,18 @@ function cleanupRoom() {
   if (bothReadyUnsub) { bothReadyUnsub(); bothReadyUnsub = null; }
   if (waitingScreenUnsub) { waitingScreenUnsub(); waitingScreenUnsub = null; }
   onlineGameState = null;
-  if (IS_ONLINE && myRole && window._db) {
+  removeTargetOverlay();
+  if (IS_ONLINE && mySlot && window._db) {
     // onDisconnect ハンドラをキャンセル（退出後の誤作動防止）
-    window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`)).cancel();
+    window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}`)).cancel();
     window._onDisconnect(window._ref(window._db, `rooms/${ROOM_ID}/config/gameState`)).cancel();
     if (IS_HOST) {
       window._remove(window._ref(window._db, `rooms/${ROOM_ID}`));
     } else {
-      window._remove(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}`));
+      window._remove(window._ref(window._db, `rooms/${ROOM_ID}/players/${mySlot}`));
     }
   }
-  myRole = null;
+  mySlot = null;
   IS_ONLINE = false;
   IS_HOST   = false;
   ROOM_ID   = null;
@@ -3440,6 +3993,23 @@ function cleanupRoom() {
   });
   document.getElementById('create-target-plus').addEventListener('click', () => {
     if (createMatchTarget < 9) { createMatchTarget++; updateCreateUI(); }
+  });
+
+  document.querySelectorAll('.create-count-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.create-count-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _pendingMaxPlayers = parseInt(btn.dataset.count, 10);
+    });
+  });
+
+  document.querySelectorAll('.tgt-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tgt-mode-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      targetMode = btn.dataset.mode;
+      updateCurrentTarget();
+    });
   });
 
   document.getElementById('create-room-confirm-btn').addEventListener('click', () => {

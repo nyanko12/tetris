@@ -498,6 +498,28 @@ const lineClearSE = new Audio('music/block/sword008.mp3');
 const gameOverSE  = new Audio('music/haiboku.mp3');
 const crashSE     = new Audio('music/crash.mp3');
 const fanfareSE   = new Audio('music/fanfale.mp3');
+const winResultBGM  = new Audio('music/Chrome Crownlight.mp3');
+winResultBGM.loop   = true;
+const loseResultBGM = new Audio('music/Console Rainfall.mp3');
+loseResultBGM.loop  = true;
+
+let _resultFadeTimer = null;
+function playResultBGM(audio) {
+  clearInterval(_resultFadeTimer);
+  [winResultBGM, loseResultBGM].forEach(a => { a.pause(); a.currentTime = 0; a.volume = 0; });
+  audio.volume = 0;
+  audio.play().catch(() => {});
+  const target = 0.6;
+  const step   = target / 40; // 2s で target に到達（50ms × 40回）
+  _resultFadeTimer = setInterval(() => {
+    audio.volume = Math.min(audio.volume + step, target);
+    if (audio.volume >= target) clearInterval(_resultFadeTimer);
+  }, 50);
+}
+function stopResultBGM() {
+  clearInterval(_resultFadeTimer);
+  [winResultBGM, loseResultBGM].forEach(a => { a.pause(); a.currentTime = 0; a.volume = 0; });
+}
 const fallSE      = new Audio('music/block/fall.mp3');
 
 const countSE   = new Audio('music/count.mp3');
@@ -983,6 +1005,7 @@ function spawnNext() {
     stopBGM();
     crashSE.currentTime = 0;
     crashSE.play();
+    setTimeout(() => playResultBGM(loseResultBGM), 500);
     saveHighScore(score);
     renderHighScores();
     triggerGameEnd('lose');
@@ -1690,6 +1713,7 @@ function gameLoop(timestamp) {
           current = null; gameOver = true;
           handleGameOver(); stopBGM();
           crashSE.currentTime = 0; crashSE.play();
+          setTimeout(() => playResultBGM(loseResultBGM), 500);
           saveHighScore(score); renderHighScores();
           triggerGameEnd('lose');
           return;
@@ -2086,6 +2110,7 @@ function gameEndLoop() {
         geCamShakeTimer     = 0;
         fanfareSE.currentTime = 0;
         fanfareSE.play().catch(() => {});
+        setTimeout(() => playResultBGM(winResultBGM), 500);
         // 紙吹雪を左右から発射
         for (let i = 0; i < GE_CONFETTI_CNT; i++) {
           const left = Math.random() < 0.5;
@@ -2439,6 +2464,7 @@ function goToTitle() {
   crashSE.currentTime = 0;
   fanfareSE.pause();
   fanfareSE.currentTime = 0;
+  stopResultBGM();
   cancelAnimationFrame(gameOverAnimId);
   document.getElementById('gameover-anim').classList.add('hidden');
   stopFireEffect();

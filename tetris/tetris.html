@@ -496,13 +496,24 @@ const pauseSE     = new Audio('music/pause.mp3');
 const moveSE      = new Audio('music/move.mp3');
 const lineClearSE = new Audio('music/sword008.mp3');
 const gameOverSE  = new Audio('music/haiboku.mp3');
+const crashSE     = new Audio('music/crash.mp3');
+const fanfareSE   = new Audio('music/fanfale.mp3');
 const fallSE      = new Audio('music/fall.mp3');
 
 const countSE   = new Audio('music/count.mp3');
 const whistleSE = new Audio('music/sei_ge_hoissuru02.mp3');
 whistleSE.volume = 0.9;
 
+// Web Audio API で countSE を 1.0 超えに増幅
+const _countAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const _countSource   = _countAudioCtx.createMediaElementSource(countSE);
+const _countGain     = _countAudioCtx.createGain();
+_countGain.gain.value = 2.5;
+_countSource.connect(_countGain);
+_countGain.connect(_countAudioCtx.destination);
+
 function playCountSound() {
+  if (_countAudioCtx.state === 'suspended') _countAudioCtx.resume();
   countSE.currentTime = 0;
   countSE.play().catch(() => {});
 }
@@ -970,8 +981,8 @@ function spawnNext() {
     gameOver = true;
     handleGameOver();
     stopBGM();
-    gameOverSE.currentTime = 0;
-    gameOverSE.play();
+    crashSE.currentTime = 0;
+    crashSE.play();
     saveHighScore(score);
     renderHighScores();
     triggerGameEnd('lose');
@@ -1678,7 +1689,7 @@ function gameLoop(timestamp) {
         if (collide(current, board)) {
           current = null; gameOver = true;
           handleGameOver(); stopBGM();
-          gameOverSE.currentTime = 0; gameOverSE.play();
+          crashSE.currentTime = 0; crashSE.play();
           saveHighScore(score); renderHighScores();
           triggerGameEnd('lose');
           return;
@@ -2073,6 +2084,8 @@ function gameEndLoop() {
         geWinLanded         = true;
         geCamShake          = true;
         geCamShakeTimer     = 0;
+        fanfareSE.currentTime = 0;
+        fanfareSE.play().catch(() => {});
         // 紙吹雪を左右から発射
         for (let i = 0; i < GE_CONFETTI_CNT; i++) {
           const left = Math.random() < 0.5;
@@ -2422,6 +2435,10 @@ function goToTitle() {
   document.getElementById('opponent-col').classList.add('hidden');
   gameOverSE.pause();
   gameOverSE.currentTime = 0;
+  crashSE.pause();
+  crashSE.currentTime = 0;
+  fanfareSE.pause();
+  fanfareSE.currentTime = 0;
   cancelAnimationFrame(gameOverAnimId);
   document.getElementById('gameover-anim').classList.add('hidden');
   stopFireEffect();

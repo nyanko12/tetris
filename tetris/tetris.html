@@ -1267,7 +1267,8 @@ function lockPiece() {
       }
       drawGarbagePreview();
     }
-    if (IS_ONLINE) applyPendingGarbage();
+    // ライン消去時はattackTimerをリセット済みのため、ここでは適用しない
+    // タイマー満了後にgameLoopが applyPendingGarbage() を呼ぶ
     if (IS_ONLINE && myRole && window._db) {
       window._set(window._ref(window._db, `rooms/${ROOM_ID}/${myRole}/board`), board);
     }
